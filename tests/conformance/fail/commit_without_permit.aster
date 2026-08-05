@@ -1,0 +1,6 @@
+module fail.commit_without_permit;
+
+fn bad(proposal: Proposal<Store.put>) -> Unit {
+  commit proposal;
+  return Unit;
+}

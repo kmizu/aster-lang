@@ -1,0 +1,43 @@
+module pass.direct_allow;
+
+type Item = { id: Text, };
+
+capability Read(owner: Text);
+capability Write(owner: Text);
+
+tool Store.put(owner: Text, request_id: Text) -> Item {
+  mode write;
+  capability Write(owner);
+  risk reversible;
+  idempotency request_id;
+  sensitivity private;
+}
+
+tool Store.get(owner: Text, id: Text) -> Item {
+  mode read;
+  capability Read(owner);
+  sensitivity private;
+}
+
+validator Matches(expected: Item, actual: Item) {
+  require (expected.id == actual.id);
+}
+
+policy Direct(p: Proposal<Store.put>) {
+  allow when true;
+  deny "denied" otherwise;
+}
+
+agent Writer(owner: Text) requires [Read(owner), Write(owner)] {
+  state {}
+  budget per_event { external_reads <= 1; external_writes <= 1; }
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
+    let proposal = propose Store.put(owner = owner, request_id = event.id) for purpose;
+    let permit = (authorize proposal using Direct)?;
+    let receipt = (commit proposal with permit)?;
+    let actual = (observe Store.get(owner = owner, id = receipt.value.id))?;
+    let confirmed = (reconcile receipt against actual with Matches)?;
+    return Ok(Unit);
+  }
+}

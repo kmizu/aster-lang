@@ -1,0 +1,24 @@
+module fail.permit_reuse;
+
+type Item = { id: Text, };
+capability Write(owner: Text);
+tool Store.put(owner: Text, request_id: Text) -> Item {
+  mode write; capability Write(owner); risk reversible;
+  idempotency request_id; sensitivity private;
+}
+policy PutPolicy(p: Proposal<Store.put>) {
+  allow when true;
+  deny "denied" otherwise;
+}
+agent A() requires [Write("owner")] {
+  state {}
+  budget per_event { external_writes <= 2; }
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
+    let proposal = propose Store.put(owner = "owner", request_id = event.id) for purpose;
+    let permit = (authorize proposal using PutPolicy)?;
+    let first = (commit proposal with permit)?;
+    let second = (commit proposal with permit)?;
+    return Ok(Unit);
+  }
+}

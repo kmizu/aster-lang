@@ -1,0 +1,19 @@
+module fail.observe_write;
+
+type Item = { id: Text, };
+capability Write(owner: Text);
+tool Store.put(owner: Text, request_id: Text) -> Item {
+  mode write;
+  capability Write(owner);
+  risk reversible;
+  idempotency request_id;
+  sensitivity private;
+}
+agent A() requires [Write("owner")] {
+  state {}
+  budget per_event { external_reads <= 1; }
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    let item = (observe Store.put(owner = "owner", request_id = event.id))?;
+    return Ok(Unit);
+  }
+}

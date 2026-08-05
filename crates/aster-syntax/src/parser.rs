@@ -267,9 +267,14 @@ impl Parser<'_> {
         self.expect_keyword(Keyword::Instruction, "`instruction`")?;
         let instruction_token = self.advance();
         let TokenKind::BlockString(instruction) = &instruction_token.kind else {
-            return Err(
-                self.expected_at_token("a static triple-quoted block string", &instruction_token)
-            );
+            return Err(Box::new(
+                Diagnostic::error(
+                    KnownDiagnosticCode::DynamicPromptInstruction.into(),
+                    "prompt instruction must be a static block string",
+                    instruction_token.span,
+                )
+                .with_help("move runtime values to the prompt data block"),
+            ));
         };
         let instruction = instruction.clone();
         self.expect_symbol(Symbol::Semicolon, "`;`")?;
@@ -950,7 +955,16 @@ impl Parser<'_> {
 
     fn parse_commit_expression(&mut self, start: usize) -> ParseResult<Expression> {
         let proposal = self.parse_expression(0)?;
-        self.expect_keyword(Keyword::With, "`with`")?;
+        if self.take_keyword(Keyword::With).is_none() {
+            return Err(Box::new(
+                Diagnostic::error(
+                    KnownDiagnosticCode::CommitWithoutPermit.into(),
+                    "commit requires `with <permit>`",
+                    self.span(start, proposal.span.end),
+                )
+                .with_help("authorize the proposal and commit it with the returned permit"),
+            ));
+        }
         let permit = self.parse_expression(0)?;
         let end = permit.span.end;
         Ok(Expression {

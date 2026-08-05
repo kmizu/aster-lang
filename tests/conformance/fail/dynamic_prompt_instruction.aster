@@ -1,0 +1,6 @@
+module fail.dynamic_prompt;
+
+prompt Dynamic(message: Text) -> Text {
+  instruction message;
+  data { message, };
+}

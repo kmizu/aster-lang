@@ -1,0 +1,16 @@
+module fail.effect_policy;
+
+type Item = { id: Text, };
+capability Read(owner: Text);
+capability Write(owner: Text);
+tool Store.get(owner: Text) -> Item {
+  mode read; capability Read(owner); sensitivity private;
+}
+tool Store.put(owner: Text, request_id: Text) -> Item {
+  mode write; capability Write(owner); risk reversible;
+  idempotency request_id; sensitivity private;
+}
+policy BadPolicy(p: Proposal<Store.put>) {
+  allow when (observe Store.get(owner = "owner")) == p;
+  deny "denied" otherwise;
+}

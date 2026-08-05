@@ -155,7 +155,7 @@ fn prompt_instruction_must_be_a_static_block_string_at_parse_time() {
     );
     let diagnostics = parse(&source).expect_err("dynamic instruction syntax is invalid");
 
-    assert_eq!(diagnostics[0].code.as_str(), "ASTER-PARSE-0001");
+    assert_eq!(diagnostics[0].code.as_str(), "ASTER-PROMPT-7001");
     assert_eq!(diagnostics[0].primary_span.start, 50);
 }
 

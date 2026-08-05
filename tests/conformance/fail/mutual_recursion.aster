@@ -1,0 +1,8 @@
+module fail.mutual_recursion;
+
+fn first(x: Int) -> Int {
+  return second(x);
+}
+fn second(x: Int) -> Int {
+  return first(x);
+}

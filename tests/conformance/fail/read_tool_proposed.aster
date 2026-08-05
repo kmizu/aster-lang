@@ -1,0 +1,18 @@
+module fail.propose_read;
+
+type Item = { id: Text, };
+capability Read(owner: Text);
+tool Store.get(owner: Text) -> Item {
+  mode read;
+  capability Read(owner);
+  sensitivity private;
+}
+agent A() requires [Read("owner")] {
+  state {}
+  budget per_event {}
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    let purpose = intent ReadPurpose { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "read"; expires_at = event.time; };
+    let proposal = propose Store.get(owner = "owner") for purpose;
+    return Ok(Unit);
+  }
+}

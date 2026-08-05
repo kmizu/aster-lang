@@ -66,7 +66,7 @@ registry = root / "crates/aster-diagnostics/src/registry.rs"
 reference = root / "docs/design-docs/diagnostics.md"
 if registry.is_file() and reference.is_file():
     registered = sorted(
-        set(re.findall(r'"(ASTER-[A-Z]+-[0-9]{4})"\s*=>', registry.read_text(encoding="utf-8")))
+        set(re.findall(r'"(ASTER-[A-Z]+-[0-9]{4,5})"\s*=>', registry.read_text(encoding="utf-8")))
     )
     reference_text = reference.read_text(encoding="utf-8")
     for code in registered:

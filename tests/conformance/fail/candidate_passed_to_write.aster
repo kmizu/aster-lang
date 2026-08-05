@@ -1,0 +1,28 @@
+module fail.candidate_write;
+
+type Message = { text: Untrusted<Text>, };
+type Request = { title: Text, };
+type Item = { id: Text, };
+capability ModelUse(alias: Text);
+capability Write(owner: Text);
+prompt Parse(message: Untrusted<Text>) -> Request {
+  instruction """Extract a title.""";
+  data { message, };
+}
+tool Store.put(owner: Text, title: Text, request_id: Text) -> Item {
+  mode write;
+  capability Write(owner);
+  risk reversible;
+  idempotency request_id;
+  sensitivity private;
+}
+agent A() requires [ModelUse("planner"), Write("owner")] {
+  state {}
+  budget per_event { model_calls <= 1; external_writes <= 1; }
+  on message(msg: Incoming<Message>) -> Result<Unit, Error> {
+    let candidate = (infer Parse(message = msg.value.text) using @planner)?;
+    let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
+    let proposal = propose Store.put(owner = "owner", title = candidate, request_id = event.id) for purpose;
+    return Ok(Unit);
+  }
+}

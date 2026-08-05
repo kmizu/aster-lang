@@ -95,3 +95,12 @@ fn diagnostic_registry_explains_known_codes_and_rejects_unknown_codes() {
 
     assert!(explain("ASTER-TYPE-2999").is_none());
 }
+
+#[test]
+fn diagnostic_code_shape_supports_four_and_five_digit_registered_families() {
+    // Catches rejecting the specified REPLAY-10xxx and BUDGET-11xxx families.
+    assert!(DiagnosticCode::new("ASTER-TYPE-2001").is_ok());
+    assert!(DiagnosticCode::new("ASTER-BUDGET-11001").is_ok());
+    assert!(DiagnosticCode::new("ASTER-TYPE-201").is_err());
+    assert!(DiagnosticCode::new("ASTER-BUDGET-110001").is_err());
+}

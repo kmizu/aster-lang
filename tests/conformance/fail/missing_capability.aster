@@ -1,0 +1,15 @@
+module fail.missing_capability;
+
+type Item = { id: Text, };
+capability Read(owner: Text);
+tool Store.get(owner: Text) -> Item {
+  mode read; capability Read(owner); sensitivity private;
+}
+agent A() requires [] {
+  state {}
+  budget per_event { external_reads <= 1; }
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    let item = (observe Store.get(owner = "owner"))?;
+    return Ok(Unit);
+  }
+}

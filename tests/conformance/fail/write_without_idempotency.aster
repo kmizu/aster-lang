@@ -1,0 +1,10 @@
+module fail.no_idempotency;
+
+type Item = { id: Text, };
+capability Write(owner: Text);
+tool Store.put(owner: Text) -> Item {
+  mode write;
+  capability Write(owner);
+  risk reversible;
+  sensitivity private;
+}

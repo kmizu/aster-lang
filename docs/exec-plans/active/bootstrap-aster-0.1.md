@@ -10,7 +10,7 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 
 - [x] M1: Workspace, documentation skeleton, diagnostics, and mechanical checks.
 - [x] M2: Lexer, parser, lossless comments, AST JSON, and canonical formatter.
-- [ ] M3: Names, types, wrappers, purity/effects, capabilities, affine analysis,
+- [x] M3: Names, types, wrappers, purity/effects, capabilities, affine analysis,
       recursion rejection, persistence checks, and conformance fixtures.
 - [ ] M4: Typed serializable IR and the meeting scheduler lowering path.
 - [ ] M5: Deterministic VM, fixtures, budgets, capabilities, proposals, permits,
@@ -59,6 +59,12 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - 2026-08-05: Parser recovery reports independent malformed declarations in
   source order. Formatter tests preserve comments and block-string contents and
   prove byte-identical second formatting.
+- 2026-08-05: Added deterministic declaration collection, type/field checking,
+  opaque candidate enforcement, pure/effect and capability checks, affine
+  proposal/permit consumption, policy totality, recursion rejection, budget and
+  persistence restrictions, and secret-to-model rejection. All mandatory
+  compile-fail fixtures now assert a stable code and relevant source span; the
+  meeting scheduler and a direct-allow governed-write fixture compile.
 
 ## Discoveries and deviations
 
@@ -87,6 +93,10 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - `cargo clippy -p aster-syntax --all-targets --all-features -- -D warnings`:
   passed after boxing internal parser diagnostics and splitting formatter
   responsibilities rather than suppressing lints.
+- `cargo test -p aster-semantics --test conformance`: 3 tests passed, covering
+  21 unsafe fixtures plus meeting-scheduler and direct-allow pass programs.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  passed with the complete static-semantics layer enabled.
 
 ## Known limitations
 

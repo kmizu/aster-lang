@@ -28,8 +28,46 @@ pub enum KnownDiagnosticCode {
     UnterminatedBlockString,
     /// Missing declaration in the relevant namespace.
     UnknownName,
+    /// A declaration identity appeared twice in one module.
+    DuplicateDeclaration,
     /// Projection or ordinary use of opaque candidate data.
     CandidateBeforeValidation,
+    /// Ordinary type mismatch.
+    TypeMismatch,
+    /// Commit syntax omitted the mandatory permit.
+    CommitWithoutPermit,
+    /// Write tool declaration omitted idempotency metadata.
+    MissingIdempotency,
+    /// Proposal and permit action parameters differ.
+    PermitActionMismatch,
+    /// Write tool used through `observe`.
+    WriteToolObserved,
+    /// Read tool used through `propose`.
+    ReadToolProposed,
+    /// Tool called like a pure function.
+    DirectToolCall,
+    /// Effect occurred in a pure declaration.
+    EffectInPureContext,
+    /// Direct or mutual recursion.
+    Recursion,
+    /// Policy omitted a final otherwise rule.
+    NonTotalPolicy,
+    /// Permit variable used after consumption.
+    PermitUseAfterMove,
+    /// Proposal variable used after consumption.
+    ProposalUseAfterMove,
+    /// Agent or flow omitted a required capability kind.
+    MissingCapability,
+    /// Prompt instruction was not a static block string.
+    DynamicPromptInstruction,
+    /// Secret entered model data.
+    SecretToModel,
+    /// Secret entered persistent state.
+    SecretInState,
+    /// Unknown budget dimension.
+    UnknownBudgetDimension,
+    /// Duplicate budget dimension.
+    DuplicateBudgetDimension,
 }
 
 impl KnownDiagnosticCode {
@@ -45,7 +83,26 @@ impl KnownDiagnosticCode {
             Self::UnterminatedString => "ASTER-PARSE-0006",
             Self::UnterminatedBlockString => "ASTER-PARSE-0007",
             Self::UnknownName => "ASTER-NAME-1001",
+            Self::DuplicateDeclaration => "ASTER-NAME-1002",
             Self::CandidateBeforeValidation => "ASTER-TYPE-2001",
+            Self::TypeMismatch => "ASTER-TYPE-2002",
+            Self::CommitWithoutPermit => "ASTER-TYPE-2003",
+            Self::MissingIdempotency => "ASTER-TYPE-2004",
+            Self::PermitActionMismatch => "ASTER-TYPE-2005",
+            Self::WriteToolObserved => "ASTER-EFFECT-3001",
+            Self::ReadToolProposed => "ASTER-EFFECT-3002",
+            Self::DirectToolCall => "ASTER-EFFECT-3003",
+            Self::EffectInPureContext => "ASTER-EFFECT-3004",
+            Self::Recursion => "ASTER-EFFECT-3005",
+            Self::NonTotalPolicy => "ASTER-POLICY-4001",
+            Self::PermitUseAfterMove => "ASTER-AFFINE-5001",
+            Self::ProposalUseAfterMove => "ASTER-AFFINE-5002",
+            Self::MissingCapability => "ASTER-CAP-6001",
+            Self::DynamicPromptInstruction => "ASTER-PROMPT-7001",
+            Self::SecretToModel => "ASTER-SECRET-8001",
+            Self::SecretInState => "ASTER-SECRET-8002",
+            Self::UnknownBudgetDimension => "ASTER-BUDGET-11001",
+            Self::DuplicateBudgetDimension => "ASTER-BUDGET-11002",
         }
     }
 }
@@ -58,7 +115,7 @@ impl From<KnownDiagnosticCode> for DiagnosticCode {
 
 /// Failure to construct a syntactically valid diagnostic code.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
-#[error("diagnostic codes must have the form ASTER-FAMILY-NNNN")]
+#[error("diagnostic codes must have the form ASTER-FAMILY-NNNN or ASTER-FAMILY-NNNNN")]
 pub struct DiagnosticCodeError;
 
 impl DiagnosticCode {
@@ -67,7 +124,7 @@ impl DiagnosticCode {
     /// # Errors
     ///
     /// Returns [`DiagnosticCodeError`] unless the value has the exact
-    /// `ASTER-FAMILY-NNNN` shape.
+    /// `ASTER-FAMILY-NNNN` or `ASTER-FAMILY-NNNNN` shape.
     pub fn new(code: impl Into<String>) -> Result<Self, DiagnosticCodeError> {
         let code = code.into();
         let mut parts = code.split('-');
@@ -76,7 +133,7 @@ impl DiagnosticCode {
                 !family.is_empty() && family.chars().all(|c| c.is_ascii_uppercase())
             })
             && parts.next().is_some_and(|number| {
-                number.len() == 4 && number.chars().all(|c| c.is_ascii_digit())
+                (4..=5).contains(&number.len()) && number.chars().all(|c| c.is_ascii_digit())
             })
             && parts.next().is_none();
         if !valid {
@@ -107,10 +164,10 @@ pub struct Explanation {
     pub remediation: &'static str,
 }
 
-/// Looks up checked-in documentation for a registered diagnostic code.
-#[must_use]
-pub fn explain(code: &str) -> Option<Explanation> {
-    let (meaning, cause, remediation) = match code {
+type ExplanationText = (&'static str, &'static str, &'static str);
+
+fn parse_explanation(code: &str) -> Option<ExplanationText> {
+    Some(match code {
         "ASTER-PARSE-0001" => (
             "the source does not conform to the ASTER 0.1 grammar",
             "an unexpected or malformed token was encountered",
@@ -146,18 +203,131 @@ pub fn explain(code: &str) -> Option<Explanation> {
             "the closing triple quote is missing",
             "add a matching triple quote after the static instruction text",
         ),
-        "ASTER-NAME-1001" => (
-            "a referenced name has no declaration in its namespace",
-            "the name is misspelled or absent",
-            "declare the symbol or use an existing declared name",
+        _ => return None,
+    })
+}
+
+fn governance_explanation(code: &str) -> Option<ExplanationText> {
+    Some(match code {
+        "ASTER-POLICY-4001" => (
+            "a policy is not total",
+            "the final source-ordered rule is not otherwise",
+            "add a final deny rule with otherwise",
         ),
-        "ASTER-TYPE-2001" => (
-            "candidate data was used before validation",
-            "Candidate<T> intentionally has no value projection",
-            "validate candidate with a compatible validator to obtain Checked<T>",
+        "ASTER-AFFINE-5001" => (
+            "a permit was used after commit consumed it",
+            "permits are affine and single-use",
+            "obtain a new permit for a new proposal",
+        ),
+        "ASTER-AFFINE-5002" => (
+            "a proposal was used after commit consumed it",
+            "committed proposals are affine resources",
+            "construct and authorize a new immutable proposal",
+        ),
+        "ASTER-CAP-6001" => (
+            "an effect lacks a declared capability requirement",
+            "the enclosing flow uses or agent requires list omits the capability kind",
+            "declare the exact capability requirement before using the effect",
+        ),
+        "ASTER-PROMPT-7001" => (
+            "prompt instruction is not a static block string",
+            "runtime expressions cannot be promoted to instructions",
+            "place all runtime values in the structured data block",
+        ),
+        "ASTER-SECRET-8001" => (
+            "secret data would enter a model request",
+            "Secret values are forbidden from prompt data",
+            "pass a non-secret validated summary instead",
+        ),
+        "ASTER-SECRET-8002" => (
+            "persistent state contains a Secret value",
+            "secret handles cannot cross snapshot or state boundaries",
+            "keep the secret in a sensitivity-secret tool boundary only",
+        ),
+        "ASTER-BUDGET-11001" => (
+            "an unknown budget dimension was declared",
+            "the dimension is outside the fixed ASTER 0.1 budget set",
+            "use one of the six specified per-event dimensions",
+        ),
+        "ASTER-BUDGET-11002" => (
+            "a budget dimension was declared more than once",
+            "duplicate limits would make reservation semantics ambiguous",
+            "keep exactly one limit for the dimension",
         ),
         _ => return None,
-    };
+    })
+}
+
+/// Looks up checked-in documentation for a registered diagnostic code.
+#[must_use]
+pub fn explain(code: &str) -> Option<Explanation> {
+    let (meaning, cause, remediation) = parse_explanation(code)
+        .or_else(|| governance_explanation(code))
+        .or_else(|| {
+            Some(match code {
+                "ASTER-NAME-1001" => (
+                    "a referenced name has no declaration in its namespace",
+                    "the name is misspelled or absent",
+                    "declare the symbol or use an existing declared name",
+                ),
+                "ASTER-NAME-1002" => (
+                    "a declaration identity appears more than once",
+                    "two declarations occupy the same module namespace and name",
+                    "rename or remove the later declaration",
+                ),
+                "ASTER-TYPE-2001" => (
+                    "candidate data was used before validation",
+                    "Candidate<T> intentionally has no value projection",
+                    "validate candidate with a compatible validator to obtain Checked<T>",
+                ),
+                "ASTER-TYPE-2002" => (
+                    "an expression type does not match its required type",
+                    "a call, binding, field, return, or operator received an incompatible value",
+                    "change the expression or its declared type so they match exactly",
+                ),
+                "ASTER-TYPE-2003" => (
+                    "commit requires an explicit permit",
+                    "the mandatory `with <permit>` clause is absent",
+                    "authorize the proposal and commit it with the returned permit",
+                ),
+                "ASTER-TYPE-2004" => (
+                    "a write tool has no idempotency parameter metadata",
+                    "write tools must identify a deterministic request key",
+                    "add `idempotency <parameter>;` for a serializable parameter",
+                ),
+                "ASTER-TYPE-2005" => (
+                    "a permit action does not match the committed proposal action",
+                    "the proposal and permit have different action phantom types",
+                    "authorize and commit the same immutable proposal",
+                ),
+                "ASTER-EFFECT-3001" => (
+                    "a write tool was invoked through observe",
+                    "observe is restricted to read-mode tools",
+                    "use intent, propose, authorize, and commit for writes",
+                ),
+                "ASTER-EFFECT-3002" => (
+                    "a read tool was used to construct a proposal",
+                    "propose is restricted to write-mode tools",
+                    "invoke the read tool through observe",
+                ),
+                "ASTER-EFFECT-3003" => (
+                    "a tool was called as an ordinary function",
+                    "tool declarations are effect metadata, not pure functions",
+                    "use observe for reads or the governed write pipeline for writes",
+                ),
+                "ASTER-EFFECT-3004" => (
+                    "an external effect appears in a pure context",
+                    "functions, validators, and policies cannot yield effects",
+                    "move the effect to a flow or event handler and pass its result explicitly",
+                ),
+                "ASTER-EFFECT-3005" => (
+                    "a direct or mutual call cycle was found",
+                    "ASTER 0.1 source computation must be finite",
+                    "replace recursion with a finite non-recursive expression",
+                ),
+                _ => return None,
+            })
+        })?;
     let code = DiagnosticCode::new(code).ok()?;
     Some(Explanation {
         code,

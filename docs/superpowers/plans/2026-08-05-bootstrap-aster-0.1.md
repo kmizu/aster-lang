@@ -71,11 +71,11 @@ modules under `aster-semantics`; add every section 23 fixture and golden result.
 Vec<Diagnostic>>`, with resolved symbols, expression types, effect bounds, and
 affine identities used by lowering.
 
-- [ ] Add one failing golden test for each mandatory unsafe fixture.
-- [ ] Confirm each fails because the rule is not implemented, not parse noise.
-- [ ] Implement passes in the specified order with stable diagnostic codes.
-- [ ] Add valid direct-allow and human-approval compile-pass fixtures.
-- [ ] Run all semantic and conformance tests and update diagnostics docs.
+- [x] Add one failing golden test for each mandatory unsafe fixture.
+- [x] Confirm each fails because the rule is not implemented, not parse noise.
+- [x] Implement passes in the specified order with stable diagnostic codes.
+- [x] Add valid direct-allow and human-approval compile-pass fixtures.
+- [x] Run all semantic and conformance tests and update diagnostics docs.
 
 ### Task 4: Typed IR and lowering
 

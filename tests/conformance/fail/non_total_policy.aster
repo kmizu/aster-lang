@@ -1,0 +1,11 @@
+module fail.non_total_policy;
+
+type Item = { id: Text, };
+capability Write(owner: Text);
+tool Store.put(owner: Text, request_id: Text) -> Item {
+  mode write; capability Write(owner); risk reversible;
+  idempotency request_id; sensitivity private;
+}
+policy Incomplete(p: Proposal<Store.put>) {
+  allow when true;
+}

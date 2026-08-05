@@ -1,0 +1,9 @@
+module fail.duplicate_declaration;
+
+fn same() -> Unit {
+  return Unit;
+}
+
+fn same() -> Unit {
+  return Unit;
+}

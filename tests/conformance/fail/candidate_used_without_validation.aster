@@ -1,0 +1,18 @@
+module fail.candidate_value;
+
+type Message = { text: Untrusted<Text>, };
+type Request = { title: Text, };
+capability ModelUse(alias: Text);
+prompt Parse(message: Untrusted<Text>) -> Request {
+  instruction """Extract a title.""";
+  data { message, };
+}
+agent A() requires [ModelUse("planner")] {
+  state {}
+  budget per_event { model_calls <= 1; }
+  on message(msg: Incoming<Message>) -> Result<Unit, Error> {
+    let candidate = (infer Parse(message = msg.value.text) using @planner)?;
+    let title = candidate.value.title;
+    return Ok(Unit);
+  }
+}

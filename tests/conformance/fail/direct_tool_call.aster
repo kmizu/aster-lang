@@ -1,0 +1,12 @@
+module fail.direct_tool;
+
+type Item = { id: Text, };
+capability Read(owner: Text);
+tool Store.get(owner: Text) -> Item {
+  mode read;
+  capability Read(owner);
+  sensitivity private;
+}
+fn bad() -> Item {
+  return Store.get(owner = "owner");
+}

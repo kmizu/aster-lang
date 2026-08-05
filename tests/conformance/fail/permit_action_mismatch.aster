@@ -1,0 +1,28 @@
+module fail.permit_mismatch;
+
+type Item = { id: Text, };
+capability Write(owner: Text);
+tool Store.one(owner: Text, request_id: Text) -> Item {
+  mode write; capability Write(owner); risk reversible;
+  idempotency request_id; sensitivity private;
+}
+tool Store.two(owner: Text, request_id: Text) -> Item {
+  mode write; capability Write(owner); risk reversible;
+  idempotency request_id; sensitivity private;
+}
+policy OnePolicy(p: Proposal<Store.one>) {
+  allow when true;
+  deny "denied" otherwise;
+}
+agent A() requires [Write("owner")] {
+  state {}
+  budget per_event { external_writes <= 1; }
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
+    let first = propose Store.one(owner = "owner", request_id = "one") for purpose;
+    let second = propose Store.two(owner = "owner", request_id = "two") for purpose;
+    let permit = (authorize first using OnePolicy)?;
+    let receipt = (commit second with permit)?;
+    return Ok(Unit);
+  }
+}

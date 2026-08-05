@@ -1,0 +1,9 @@
+module fail.unknown_budget;
+
+agent A() requires [] {
+  state {}
+  budget per_event { network_calls <= 1; }
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    return Ok(Unit);
+  }
+}
