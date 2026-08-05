@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use aster_runtime::{
     AuthorityError, AuthorityLedger, Budget, BudgetDimension, BudgetError, DriverError,
-    EffectDriver, EffectKind, EffectRequest, FixtureDriver, FixtureEntry, FixtureSet, Intent,
-    Proposal, ProposalMetadata, RuntimeValue, SnapshotError, Trace, TraceError, canonical_json,
+    EffectDriver, EffectKind, EffectRequest, EffectResolution, FixtureDriver, FixtureEntry,
+    FixtureSet, Intent, Proposal, ProposalMetadata, RuntimeValue, SnapshotError, Trace, TraceError,
+    canonical_json, canonical_sha256,
 };
 use serde_json::json;
 
@@ -139,6 +140,13 @@ fn proposal_hash_binds_every_authority_relevant_field() {
             changed,
         );
     }
+    let mut changed_schema = serde_json::to_value(&base).expect("proposal serializes");
+    changed_schema["schema_version"] = json!(2);
+    changed_schema["digest"] = json!("");
+    assert_ne!(
+        canonical_sha256(&changed_schema).expect("changed schema hashes"),
+        base.hash()
+    );
 }
 
 #[test]
@@ -159,14 +167,32 @@ fn permit_is_bound_expiring_and_single_use() {
     )
     .unwrap();
     let mut ledger = AuthorityLedger::default();
-    let permit = ledger.issue(
-        &first,
-        "DirectPolicy",
-        "grant-a",
-        "2026-08-05T12:00:00Z",
-        "2026-08-05T12:01:00Z",
-        "direct_allow",
+    let mut unsealed = first.clone();
+    unsealed.arguments.insert(
+        "request_id".to_owned(),
+        json!("mutated-before-authorization"),
     );
+    assert_eq!(
+        ledger.issue(
+            &unsealed,
+            "DirectPolicy",
+            "grant-a",
+            "2026-08-05T12:00:00Z",
+            "2026-08-05T12:01:00Z",
+            "direct_allow",
+        ),
+        Err(AuthorityError::ProposalMismatch)
+    );
+    let permit = ledger
+        .issue(
+            &first,
+            "DirectPolicy",
+            "grant-a",
+            "2026-08-05T12:00:00Z",
+            "2026-08-05T12:01:00Z",
+            "direct_allow",
+        )
+        .expect("sealed proposal receives a permit");
     let mut forged_json = serde_json::to_value(&permit).expect("permit serializes for persistence");
     forged_json["policy"] = json!("ForgedPolicy");
     let forged: aster_runtime::Permit =
@@ -187,6 +213,15 @@ fn permit_is_bound_expiring_and_single_use() {
     assert_eq!(
         ledger.consume(&first, &permit, "grant-a", "2026-08-05T12:01:01Z"),
         Err(AuthorityError::Expired)
+    );
+    let mut mutated = first.clone();
+    mutated.arguments.insert(
+        "request_id".to_owned(),
+        json!("mutated-after-authorization"),
+    );
+    assert_eq!(
+        ledger.consume(&mutated, &permit, "grant-a", "2026-08-05T12:00:30Z"),
+        Err(AuthorityError::ProposalMismatch)
     );
     ledger
         .consume(&first, &permit, "grant-a", "2026-08-05T12:00:30Z")
@@ -272,6 +307,39 @@ fn canonical_json_and_trace_chain_are_deterministic_and_tamper_evident() {
     assert_eq!(
         trace.verify(),
         Err(TraceError::HashMismatch { sequence: 0 })
+    );
+}
+
+#[test]
+fn trace_boundary_rejects_unknown_fields_and_schema_versions() {
+    let mut trace = Trace::new("run-001");
+    trace.append("run_completed", json!({"ok": true})).unwrap();
+    let encoded = trace.to_json_lines().expect("trace serializes");
+    let mut line: serde_json::Value =
+        serde_json::from_str(encoded.trim()).expect("trace line is JSON");
+    line["unexpected"] = json!(true);
+    assert_eq!(
+        Trace::from_json_lines(&serde_json::to_string(&line).expect("line serializes")),
+        Err(TraceError::MalformedLine { sequence: 0 })
+    );
+
+    trace.entries[0].schema_version = 2;
+    assert_eq!(
+        trace.verify(),
+        Err(TraceError::MetadataMismatch { sequence: 0 })
+    );
+}
+
+#[test]
+fn durable_resolution_rejects_unknown_fields() {
+    assert!(
+        serde_json::from_value::<EffectResolution>(json!({
+            "request_hash": "request-001",
+            "payload": {},
+            "actual_usage": {},
+            "unexpected": true
+        }))
+        .is_err()
     );
 }
 

@@ -10,6 +10,10 @@ cargo test --workspace --all-features
 ./scripts/tests/check-architecture.sh
 ./scripts/tests/check-docs.sh
 ./scripts/tests/check-production-rust.sh
+./scripts/tests/check-site.sh
+./scripts/tests/check-release.sh
 ./scripts/check-architecture.sh
 ./scripts/check-production-rust.sh
 ./scripts/check-docs.sh
+./scripts/check-site.sh
+./scripts/check-release.sh

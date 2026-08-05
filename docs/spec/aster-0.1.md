@@ -144,10 +144,19 @@ statically resolved calls, unary and arithmetic/comparison/boolean operators,
 `if`, finite `match`, and `Result` propagation with `?`. Statements are `let`,
 `require`, transactional `update state`, `return`, and expression statements.
 There are no loops, recursion, closures, mutable locals, or detached tasks.
+Bindings are lexical: a `let` or pattern payload may shadow an outer name only
+inside its block or match arm, and branch-local bindings never escape.
+Declared functions, flows, prompts, tools, and capabilities accept positional
+arguments or an exact set of declared names. Built-ins and enum constructors
+accept positional arguments only.
 
 `fn`, validators, and policy conditions are pure and deterministic. A `flow`
 declares an upper bound in `uses`; inferred effects must be its subset. Event
-handler effects must be covered by the agent's `requires` list.
+handler effects must be covered by the agent's `requires` list. An agent has at
+least one handler, and every handler accepts exactly one `Incoming<T>` payload.
+Pure declaration metadata, including state defaults and capability expressions,
+supports the same finite `if`/`match` block computation but cannot return,
+update state, or perform an effect.
 
 Inference has type `Result<Candidate<T>, Error>`. Only
 `validate candidate with Validator` can create `Checked<T>`. Read tools execute
@@ -161,11 +170,17 @@ Source declares capability requirements but cannot mint grants. Runtime grants
 are versioned JSON values and must exactly match the evaluated typed request.
 
 Policies are ordered total decision tables. The first matching `allow`,
-`approve`, or `deny` rule wins and a final `otherwise` is mandatory. Approval is
-an external suspension after pure policy evaluation.
+`approve`, or `deny` rule wins, and there is exactly one `otherwise` rule in the
+final position. A policy's optional second parameter is the authorizing
+agent's exact `Agent.State`; a stateful policy cannot be authorized from a flow
+whose agent context is not statically known. Approval is an external suspension
+after pure policy evaluation.
 
 Proposals are immutable and hash action, arguments, intent, risk, sensitivity,
-capability request, idempotency key, program identity, and schema version.
+capability request, idempotency key, program identity, and schema version. The
+runtime revalidates that seal before issuing and immediately before consuming a
+permit, so a deserialized or host-mutated proposal cannot acquire or retain
+authority.
 Permit and proposal consumption is affine; a commit requires matching action
 types and the runtime also checks proposal hash, issue and expiry times,
 capability fingerprint, policy decision evidence, issuance-ledger membership,
@@ -186,6 +201,18 @@ data channel. Instructions cannot interpolate or evaluate expressions.
 `Secret<T>` has no source constructor and cannot enter prompts, state,
 ordinary diagnostics, console output, traces, snapshots, equality, hashing, or
 string conversion.
+
+`Candidate<T>` may be transported only as an opaque in-memory value on the way
+to validation. Candidate-containing values cannot appear in prompt or tool
+schemas, capability grants, agent inputs, handler outputs, or persistent state;
+these restrictions also apply through aliases, records, enums, and containers.
+
+Boundary types are checked transitively. Capability parameters, prompt results,
+validator values, tool results, agent state, and handler results contain only
+plain data. External agent inputs may additionally use `Incoming` and
+`Untrusted`; prompt inputs may additionally use `Checked` and `Observation`;
+tool arguments may additionally use `Secret`. Governance and authority wrappers
+are never constructible from ordinary JSON.
 
 Event, state, capability, fixture, trace, snapshot, and final-state JSON each
 carry `schema_version: 1`; unknown fields and privileged wrapper construction
@@ -224,8 +251,11 @@ state fields fail. Supplied fields are decoded against their declarations;
 omitted fields use their source-declared defaults. Final state has exactly the
 same envelope and contains every declared field in canonical name order.
 
-Null represents `Unit` or `None`; nonempty `Option<T>` uses the JSON shape of
-`T`. A user enum is `{"variant":"Name"}` for a nullary variant and
+Null represents `Unit` or `None`; `Some(value)` is
+`{"some":VALUE}`. `Ok(value)` is `{"ok":VALUE}` and `Err(error)` is
+`{"error":ERROR}`. These tags keep `Some(Unit)` distinct from `None` and keep
+an `Ok` record containing a field named `error` distinct from `Err`. Each
+tagged object has exactly one key. A user enum is `{"variant":"Name"}` for a nullary variant and
 `{"variant":"Name","value":PAYLOAD}` for a payload variant. The variant must
 belong to the statically expected enum, and extra keys are rejected.
 

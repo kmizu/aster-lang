@@ -180,6 +180,24 @@ fn public_commands_check_format_ast_record_and_replay() {
         fs::read(directory.path().join("record.json")).expect("recorded state"),
         fs::read(replay).expect("replayed state")
     );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        for artifact in [
+            directory.path().join("trace.jsonl"),
+            directory.path().join("record.json"),
+            directory.path().join("replay.json"),
+            directory.path().join("snapshots/snapshot-0000.json"),
+        ] {
+            let mode = fs::metadata(&artifact)
+                .expect("sensitive artifact metadata reads")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "{} must be private", artifact.display());
+        }
+    }
 }
 
 #[test]
@@ -224,6 +242,10 @@ fn exit_codes_distinguish_source_runtime_and_replay_failures() {
         .status()
         .expect("runtime executes");
     assert_eq!(runtime_status.code(), Some(2));
+    assert!(
+        !directory.path().join("record.json").exists(),
+        "failed handlers must not publish an output-state artifact"
+    );
 
     assert!(
         aster()
@@ -324,4 +346,65 @@ fn malformed_json_trace_and_snapshot_are_controlled_cli_failures() {
         .status()
         .expect("malformed snapshot is controlled");
     assert_eq!(resume.code(), Some(2));
+}
+
+#[test]
+fn versioned_input_boundaries_reject_unknown_fields_and_unsupported_schemas() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let boundaries = [
+        ("--input", "event.json", "top"),
+        ("--state", "initial-state.json", "top"),
+        ("--capabilities", "capabilities.json", "grant"),
+        ("--fixtures", "fixtures.json", "entry"),
+    ];
+
+    for (flag, filename, unknown_location) in boundaries {
+        let original: serde_json::Value =
+            serde_json::from_slice(&fs::read(example(filename)).expect("example boundary reads"))
+                .expect("example boundary is JSON");
+        for mutation in ["unknown", "version"] {
+            let mut changed = original.clone();
+            if mutation == "version" {
+                changed["schema_version"] = serde_json::json!(2);
+            } else {
+                match unknown_location {
+                    "grant" => changed["grants"][0]["unexpected"] = serde_json::json!(true),
+                    "entry" => changed["entries"][0]["unexpected"] = serde_json::json!(true),
+                    _ => changed["unexpected"] = serde_json::json!(true),
+                }
+            }
+            let path = directory.path().join(format!("{filename}-{mutation}.json"));
+            fs::write(
+                &path,
+                serde_json::to_vec(&changed).expect("boundary serializes"),
+            )
+            .expect("boundary writes");
+            let mut args = run_args(directory.path());
+            let index = args
+                .iter()
+                .position(|value| value == flag)
+                .expect("boundary flag")
+                + 1;
+            args[index] = path.display().to_string();
+            let status = aster()
+                .args(args)
+                .status()
+                .expect("invalid boundary is controlled");
+            assert_eq!(status.code(), Some(2), "{flag} {mutation}");
+        }
+    }
+}
+
+#[test]
+fn non_utf8_source_is_a_controlled_source_failure() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let source = directory.path().join("non-utf8.aster");
+    fs::write(&source, [0xff, 0xfe]).expect("invalid UTF-8 writes");
+
+    let status = aster()
+        .args(["check", source.to_str().expect("UTF-8 path")])
+        .status()
+        .expect("invalid UTF-8 is controlled");
+
+    assert_eq!(status.code(), Some(1));
 }

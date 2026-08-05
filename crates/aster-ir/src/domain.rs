@@ -483,6 +483,30 @@ pub struct MatchTarget {
     pub target: u32,
 }
 
+/// One effect-free lexical block used by pure metadata expressions.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PureBlockSpec {
+    pub statements: Vec<PureStatementSpec>,
+}
+
+/// One statement that is legal inside a pure metadata block.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PureStatementSpec {
+    Let { name: String, value: PureExpression },
+    Require { condition: PureExpression },
+    Expression { value: PureExpression },
+}
+
+/// One source-ordered pure match arm.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PureMatchArmSpec {
+    pub pattern: PatternSpec,
+    pub value: PureExpression,
+}
+
 /// Serializable finite pattern.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -535,6 +559,15 @@ pub enum PureExpression {
     Call {
         function: String,
         arguments: Vec<NamedExpression>,
+    },
+    If {
+        condition: Box<PureExpression>,
+        then_block: PureBlockSpec,
+        else_block: PureBlockSpec,
+    },
+    Match {
+        value: Box<PureExpression>,
+        arms: Vec<PureMatchArmSpec>,
     },
     Slot {
         value: ValueId,

@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aster_syntax::{
     AgentDeclaration, DeclarationKind, EnumDeclaration, FunctionDeclaration, Module,
-    PolicyDeclaration, PromptDeclaration, ToolDeclaration, TypeDeclaration, TypeDefinition,
-    TypeReference, ValidatorDeclaration,
+    PolicyDeclaration, PromptDeclaration, SignatureDeclaration, ToolDeclaration, TypeDeclaration,
+    TypeDefinition, TypeReference, ValidatorDeclaration,
 };
 
 use crate::Type;
@@ -12,6 +12,7 @@ pub(crate) struct Model<'a> {
     pub(crate) module: &'a Module,
     pub(crate) types: BTreeMap<String, &'a TypeDeclaration>,
     pub(crate) enums: BTreeMap<String, &'a EnumDeclaration>,
+    pub(crate) capabilities: BTreeMap<String, &'a SignatureDeclaration>,
     pub(crate) prompts: BTreeMap<String, &'a PromptDeclaration>,
     pub(crate) validators: BTreeMap<String, &'a ValidatorDeclaration>,
     pub(crate) functions: BTreeMap<String, &'a FunctionDeclaration>,
@@ -27,6 +28,7 @@ impl<'a> Model<'a> {
             module,
             types: BTreeMap::new(),
             enums: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
             prompts: BTreeMap::new(),
             validators: BTreeMap::new(),
             functions: BTreeMap::new(),
@@ -43,7 +45,12 @@ impl<'a> Model<'a> {
                 DeclarationKind::Enum(value) => {
                     model.enums.entry(value.name.clone()).or_insert(value);
                 }
-                DeclarationKind::Capability(_) => {}
+                DeclarationKind::Capability(value) => {
+                    model
+                        .capabilities
+                        .entry(value.name.clone())
+                        .or_insert(value);
+                }
                 DeclarationKind::Prompt(value) => {
                     model.prompts.entry(value.name.clone()).or_insert(value);
                 }
@@ -185,6 +192,101 @@ impl<'a> Model<'a> {
         self.contains_secret_with_seen(ty, &mut BTreeSet::new())
     }
 
+    pub(crate) fn contains_candidate(&self, ty: &Type) -> bool {
+        self.contains_candidate_with_seen(ty, &mut BTreeSet::new())
+    }
+
+    pub(crate) fn is_plain_boundary_data(&self, ty: &Type) -> bool {
+        self.is_boundary_data_with_seen(ty, &mut BTreeSet::new(), false, false, false)
+    }
+
+    pub(crate) fn is_external_input_data(&self, ty: &Type) -> bool {
+        self.is_boundary_data_with_seen(ty, &mut BTreeSet::new(), true, false, false)
+    }
+
+    pub(crate) fn is_model_input_data(&self, ty: &Type) -> bool {
+        self.is_boundary_data_with_seen(ty, &mut BTreeSet::new(), true, true, false)
+    }
+
+    pub(crate) fn is_tool_argument_data(&self, ty: &Type) -> bool {
+        self.is_boundary_data_with_seen(ty, &mut BTreeSet::new(), true, true, true)
+    }
+
+    pub(crate) fn is_deterministically_serializable(&self, ty: &Type) -> bool {
+        self.is_deterministically_serializable_with_seen(ty, &mut BTreeSet::new())
+    }
+
+    fn is_deterministically_serializable_with_seen(
+        &self,
+        ty: &Type,
+        seen: &mut BTreeSet<String>,
+    ) -> bool {
+        match self.normalized(ty) {
+            Type::Unit
+            | Type::Bool
+            | Type::Int
+            | Type::Text
+            | Type::Instant
+            | Type::Duration
+            | Type::ProvenanceRef
+            | Type::Error => true,
+            Type::Option(inner)
+            | Type::List(inner)
+            | Type::Incoming(inner)
+            | Type::Untrusted(inner)
+            | Type::Checked(inner)
+            | Type::Observation(inner) => {
+                self.is_deterministically_serializable_with_seen(&inner, seen)
+            }
+            Type::Result(ok, error) => {
+                self.is_deterministically_serializable_with_seen(&ok, seen)
+                    && self.is_deterministically_serializable_with_seen(&error, seen)
+            }
+            Type::Named(name) => {
+                if !seen.insert(name.clone()) {
+                    return false;
+                }
+                let result = self.types.get(&name).is_some_and(|declaration| {
+                    match &declaration.definition {
+                        TypeDefinition::Alias(reference) => self
+                            .is_deterministically_serializable_with_seen(
+                                &self.resolve_type(reference),
+                                seen,
+                            ),
+                        TypeDefinition::Record(fields) => fields.iter().all(|field| {
+                            self.is_deterministically_serializable_with_seen(
+                                &self.resolve_type(&field.ty),
+                                seen,
+                            )
+                        }),
+                    }
+                }) || self.enums.get(&name).is_some_and(|declaration| {
+                    declaration.variants.iter().all(|variant| {
+                        variant.payload.as_ref().is_none_or(|payload| {
+                            self.is_deterministically_serializable_with_seen(
+                                &self.resolve_type(payload),
+                                seen,
+                            )
+                        })
+                    })
+                });
+                seen.remove(&name);
+                result
+            }
+            Type::Unknown
+            | Type::Candidate(_)
+            | Type::Secret(_)
+            | Type::Intent(_)
+            | Type::Proposal(_)
+            | Type::Permit(_)
+            | Type::Receipt(_)
+            | Type::Reconciled(_)
+            | Type::ToolArguments(_)
+            | Type::AgentState(_)
+            | Type::Event => false,
+        }
+    }
+
     fn contains_secret_with_seen(&self, ty: &Type, seen: &mut BTreeSet<String>) -> bool {
         match ty {
             Type::Secret(_) => true,
@@ -202,6 +304,16 @@ impl<'a> Model<'a> {
                             TypeDefinition::Record(fields) => fields.iter().any(|field| {
                                 self.contains_secret_with_seen(&self.resolve_type(&field.ty), seen)
                             }),
+                        })
+                        || self.enums.get(name).is_some_and(|declaration| {
+                            declaration.variants.iter().any(|variant| {
+                                variant.payload.as_ref().is_some_and(|payload| {
+                                    self.contains_secret_with_seen(
+                                        &self.resolve_type(payload),
+                                        seen,
+                                    )
+                                })
+                            })
                         });
                 seen.remove(name);
                 result
@@ -219,6 +331,191 @@ impl<'a> Model<'a> {
             }
             _ => false,
         }
+    }
+
+    fn contains_candidate_with_seen(&self, ty: &Type, seen: &mut BTreeSet<String>) -> bool {
+        match ty {
+            Type::Candidate(_) => true,
+            Type::Named(name) => {
+                if !seen.insert(name.clone()) {
+                    return false;
+                }
+                let result =
+                    self.types
+                        .get(name)
+                        .is_some_and(|declaration| match &declaration.definition {
+                            TypeDefinition::Alias(alias) => {
+                                self.contains_candidate_with_seen(&self.resolve_type(alias), seen)
+                            }
+                            TypeDefinition::Record(fields) => fields.iter().any(|field| {
+                                self.contains_candidate_with_seen(
+                                    &self.resolve_type(&field.ty),
+                                    seen,
+                                )
+                            }),
+                        })
+                        || self.enums.get(name).is_some_and(|declaration| {
+                            declaration.variants.iter().any(|variant| {
+                                variant.payload.as_ref().is_some_and(|payload| {
+                                    self.contains_candidate_with_seen(
+                                        &self.resolve_type(payload),
+                                        seen,
+                                    )
+                                })
+                            })
+                        });
+                seen.remove(name);
+                result
+            }
+            Type::Option(inner)
+            | Type::List(inner)
+            | Type::Incoming(inner)
+            | Type::Untrusted(inner)
+            | Type::Checked(inner)
+            | Type::Observation(inner)
+            | Type::Secret(inner) => self.contains_candidate_with_seen(inner, seen),
+            Type::Result(ok, error) => {
+                self.contains_candidate_with_seen(ok, seen)
+                    || self.contains_candidate_with_seen(error, seen)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_boundary_data_with_seen(
+        &self,
+        ty: &Type,
+        seen: &mut BTreeSet<String>,
+        allow_untrusted: bool,
+        allow_validated: bool,
+        allow_secret: bool,
+    ) -> bool {
+        match self.normalized(ty) {
+            Type::Unit
+            | Type::Bool
+            | Type::Int
+            | Type::Text
+            | Type::Instant
+            | Type::Duration
+            | Type::ProvenanceRef
+            | Type::Error => true,
+            Type::Option(inner) | Type::List(inner) => self.is_boundary_data_with_seen(
+                &inner,
+                seen,
+                allow_untrusted,
+                allow_validated,
+                allow_secret,
+            ),
+            Type::Result(ok, error) => {
+                self.is_boundary_data_with_seen(
+                    &ok,
+                    seen,
+                    allow_untrusted,
+                    allow_validated,
+                    allow_secret,
+                ) && self.is_boundary_data_with_seen(
+                    &error,
+                    seen,
+                    allow_untrusted,
+                    allow_validated,
+                    allow_secret,
+                )
+            }
+            Type::Incoming(inner) | Type::Untrusted(inner) if allow_untrusted => self
+                .is_boundary_data_with_seen(
+                    &inner,
+                    seen,
+                    allow_untrusted,
+                    allow_validated,
+                    allow_secret,
+                ),
+            Type::Checked(inner) | Type::Observation(inner) if allow_validated => self
+                .is_boundary_data_with_seen(
+                    &inner,
+                    seen,
+                    allow_untrusted,
+                    allow_validated,
+                    allow_secret,
+                ),
+            Type::Secret(inner) if allow_secret => self.is_boundary_data_with_seen(
+                &inner,
+                seen,
+                allow_untrusted,
+                allow_validated,
+                allow_secret,
+            ),
+            Type::Named(name) => self.is_named_boundary_data(
+                &name,
+                seen,
+                allow_untrusted,
+                allow_validated,
+                allow_secret,
+            ),
+            Type::Unknown
+            | Type::Incoming(_)
+            | Type::Untrusted(_)
+            | Type::Candidate(_)
+            | Type::Checked(_)
+            | Type::Observation(_)
+            | Type::Secret(_)
+            | Type::Intent(_)
+            | Type::Proposal(_)
+            | Type::Permit(_)
+            | Type::Receipt(_)
+            | Type::Reconciled(_)
+            | Type::ToolArguments(_)
+            | Type::AgentState(_)
+            | Type::Event => false,
+        }
+    }
+
+    fn is_named_boundary_data(
+        &self,
+        name: &str,
+        seen: &mut BTreeSet<String>,
+        allow_untrusted: bool,
+        allow_validated: bool,
+        allow_secret: bool,
+    ) -> bool {
+        if !seen.insert(name.to_owned()) {
+            return false;
+        }
+        let type_is_boundary_data =
+            self.types
+                .get(name)
+                .is_some_and(|declaration| match &declaration.definition {
+                    TypeDefinition::Alias(alias) => self.is_boundary_data_with_seen(
+                        &self.resolve_type(alias),
+                        seen,
+                        allow_untrusted,
+                        allow_validated,
+                        allow_secret,
+                    ),
+                    TypeDefinition::Record(fields) => fields.iter().all(|field| {
+                        self.is_boundary_data_with_seen(
+                            &self.resolve_type(&field.ty),
+                            seen,
+                            allow_untrusted,
+                            allow_validated,
+                            allow_secret,
+                        )
+                    }),
+                });
+        let enum_is_boundary_data = self.enums.get(name).is_some_and(|declaration| {
+            declaration.variants.iter().all(|variant| {
+                variant.payload.as_ref().is_none_or(|payload| {
+                    self.is_boundary_data_with_seen(
+                        &self.resolve_type(payload),
+                        seen,
+                        allow_untrusted,
+                        allow_validated,
+                        allow_secret,
+                    )
+                })
+            })
+        });
+        seen.remove(name);
+        type_is_boundary_data || enum_is_boundary_data
     }
 
     fn is_enum(&self, name: &str) -> bool {

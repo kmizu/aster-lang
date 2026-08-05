@@ -187,7 +187,10 @@ fn meeting_record_and_driver_free_replay_have_identical_state() {
         canonical_json(&json!(recorded.outcome.state)).unwrap(),
         canonical_json(&json!(replayed.state)).unwrap()
     );
-    assert_eq!(replayed.state["last_event"], json!({"id": "event-001"}));
+    assert_eq!(
+        replayed.state["last_event"],
+        json!({"some": {"id": "event-001"}})
+    );
 }
 
 #[test]

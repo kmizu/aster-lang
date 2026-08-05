@@ -22,7 +22,8 @@ typed request.
   identities.
 - Permit substitution, deserialized forgery, and double use are prevented by
   canonical proposal hashes, self-validating permit identities, an issuance
-  ledger, affine static checks, and a runtime consumption ledger.
+  ledger, affine static checks, a runtime consumption ledger, and proposal-seal
+  revalidation at permit issuance and immediately before permit consumption.
 - Excessive effects are rejected by capability and pre-driver budget checks.
 - Replay substitution is rejected by hash-chain, fingerprint, request-order,
   and semantic recomputation checks.
@@ -31,6 +32,9 @@ typed request.
   in the snapshot until successful reconciliation, and block normal completion.
 - Secret exfiltration is prevented by opaque representation and rejection at
   every prompt, render, serialization, state, trace, and snapshot boundary.
+- Ordinary JSON is restricted to boundary-specific data shapes: untrusted
+  wrappers only at external input, validated wrappers only at model/tool input,
+  and no candidate or authority wrapper at a persistent or external boundary.
 - Nondeterministic audit output is prevented by canonical serialization,
   ordered collections, recorded effect results, and no ambient clock/randomness.
 

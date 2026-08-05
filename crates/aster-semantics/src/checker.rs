@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aster_diagnostics::{Diagnostic, KnownDiagnosticCode};
 use aster_syntax::{
-    AgentDeclaration, Block, DeclarationKind, Expression, ExpressionKind, FunctionDeclaration,
-    Module, PolicyDecision, SourceFile, StatementKind, ToolMode, parse,
+    AgentDeclaration, Block, CapabilityExpression, DeclarationKind, Expression, ExpressionKind,
+    FunctionDeclaration, Module, PolicyDecision, Sensitivity, SourceFile, StatementKind,
+    ToolDeclaration, ToolMode, TypeDefinition, TypeReference, parse,
 };
 
 use crate::{
@@ -74,6 +75,11 @@ pub fn check(module: Module) -> Result<CheckedProgram, Vec<Diagnostic>> {
     let mut diagnostics = Vec::new();
 
     check_duplicate_declarations(&module, &mut diagnostics);
+    check_type_well_formedness(&module, &model, &mut diagnostics);
+    check_secret_type_placement(&module, &model, &mut diagnostics);
+    check_candidate_type_placement(&module, &model, &mut diagnostics);
+    check_boundary_type_placement(&module, &model, &mut diagnostics);
+    check_capability_requests(&module, &model, &mut diagnostics);
     check_declaration_metadata(&module, &model, &mut diagnostics);
     check_recursion(&module, &mut diagnostics);
     check_executable_bodies(&module, &model, &mut diagnostics);
@@ -91,10 +97,553 @@ pub fn check(module: Module) -> Result<CheckedProgram, Vec<Diagnostic>> {
     }
 }
 
+fn check_type_well_formedness(
+    module: &Module,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for declaration in &module.declarations {
+        match &declaration.kind {
+            DeclarationKind::Type(value) => match &value.definition {
+                TypeDefinition::Alias(ty) => {
+                    check_type_reference(ty, model, diagnostics);
+                    if alias_reaches(&value.name, &value.name, model, &mut BTreeSet::new()) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                KnownDiagnosticCode::TypeMismatch.into(),
+                                format!("cyclic type alias `{}`", value.name),
+                                ty.span.clone(),
+                            )
+                            .with_help("break the alias cycle with a concrete declared type"),
+                        );
+                    }
+                }
+                TypeDefinition::Record(fields) => {
+                    check_duplicate_names(
+                        fields.iter().map(|field| (&field.name, &field.span)),
+                        "record field",
+                        diagnostics,
+                    );
+                    for field in fields {
+                        check_type_reference(&field.ty, model, diagnostics);
+                    }
+                }
+            },
+            DeclarationKind::Enum(value) => {
+                check_duplicate_names(
+                    value
+                        .variants
+                        .iter()
+                        .map(|variant| (&variant.name, &variant.span)),
+                    "enum variant",
+                    diagnostics,
+                );
+                for variant in &value.variants {
+                    if let Some(payload) = &variant.payload {
+                        check_type_reference(payload, model, diagnostics);
+                    }
+                }
+            }
+            DeclarationKind::Capability(value) => {
+                check_parameter_types(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Function(value) | DeclarationKind::Flow(value) => {
+                check_parameter_types(&value.parameters, model, diagnostics);
+                check_type_reference(&value.return_type, model, diagnostics);
+            }
+            DeclarationKind::Prompt(value) => {
+                check_parameter_types(&value.parameters, model, diagnostics);
+                check_type_reference(&value.result_type, model, diagnostics);
+            }
+            DeclarationKind::Validator(value) => {
+                check_parameter_types(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Tool(value) => {
+                check_parameter_types(&value.parameters, model, diagnostics);
+                check_type_reference(&value.return_type, model, diagnostics);
+            }
+            DeclarationKind::Policy(value) => {
+                check_parameter_types(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Agent(value) => {
+                check_parameter_types(&value.parameters, model, diagnostics);
+                check_duplicate_names(
+                    value.state.iter().map(|field| (&field.name, &field.span)),
+                    "state field",
+                    diagnostics,
+                );
+                check_duplicate_names(
+                    value
+                        .handlers
+                        .iter()
+                        .map(|handler| (&handler.event, &handler.span)),
+                    "event handler",
+                    diagnostics,
+                );
+                for field in &value.state {
+                    check_type_reference(&field.ty, model, diagnostics);
+                }
+                for handler in &value.handlers {
+                    check_parameter_types(&handler.parameters, model, diagnostics);
+                    check_type_reference(&handler.return_type, model, diagnostics);
+                }
+            }
+        }
+    }
+}
+
+fn check_secret_type_placement(
+    module: &Module,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for declaration in &module.declarations {
+        match &declaration.kind {
+            DeclarationKind::Type(value) => match &value.definition {
+                TypeDefinition::Alias(ty) => {
+                    reject_secret_outside_tool_parameter(ty, model, diagnostics);
+                }
+                TypeDefinition::Record(fields) => {
+                    for field in fields {
+                        reject_secret_outside_tool_parameter(&field.ty, model, diagnostics);
+                    }
+                }
+            },
+            DeclarationKind::Enum(value) => {
+                for payload in value
+                    .variants
+                    .iter()
+                    .filter_map(|variant| variant.payload.as_ref())
+                {
+                    reject_secret_outside_tool_parameter(payload, model, diagnostics);
+                }
+            }
+            DeclarationKind::Capability(value) => {
+                reject_secret_parameters(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Function(value) | DeclarationKind::Flow(value) => {
+                reject_secret_parameters(&value.parameters, model, diagnostics);
+                reject_secret_outside_tool_parameter(&value.return_type, model, diagnostics);
+            }
+            DeclarationKind::Prompt(_) => {}
+            DeclarationKind::Validator(value) => {
+                reject_secret_parameters(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Tool(value) => {
+                if value.metadata.sensitivity != Some(Sensitivity::Secret) {
+                    reject_secret_parameters(&value.parameters, model, diagnostics);
+                }
+                reject_secret_outside_tool_parameter(&value.return_type, model, diagnostics);
+            }
+            DeclarationKind::Policy(value) => {
+                reject_secret_parameters(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Agent(value) => {
+                reject_secret_parameters(&value.parameters, model, diagnostics);
+                for handler in &value.handlers {
+                    reject_secret_parameters(&handler.parameters, model, diagnostics);
+                    reject_secret_outside_tool_parameter(&handler.return_type, model, diagnostics);
+                }
+            }
+        }
+    }
+}
+
+fn check_candidate_type_placement(
+    module: &Module,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for declaration in &module.declarations {
+        match &declaration.kind {
+            DeclarationKind::Capability(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Prompt(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+                reject_candidate_boundary(&value.result_type, model, diagnostics);
+            }
+            DeclarationKind::Validator(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Tool(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+                reject_candidate_boundary(&value.return_type, model, diagnostics);
+            }
+            DeclarationKind::Agent(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+                for field in &value.state {
+                    reject_candidate_boundary(&field.ty, model, diagnostics);
+                }
+                for handler in &value.handlers {
+                    reject_candidate_parameters(&handler.parameters, model, diagnostics);
+                    reject_candidate_boundary(&handler.return_type, model, diagnostics);
+                }
+            }
+            DeclarationKind::Type(_)
+            | DeclarationKind::Enum(_)
+            | DeclarationKind::Function(_)
+            | DeclarationKind::Flow(_)
+            | DeclarationKind::Policy(_) => {}
+        }
+    }
+}
+
+fn check_boundary_type_placement(
+    module: &Module,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for declaration in &module.declarations {
+        match &declaration.kind {
+            DeclarationKind::Capability(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_plain_boundary_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+            }
+            DeclarationKind::Prompt(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_model_input_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+                reject_invalid_boundary_type(
+                    &value.result_type,
+                    model.is_plain_boundary_data(&model.resolve_type(&value.result_type)),
+                    model,
+                    diagnostics,
+                );
+            }
+            DeclarationKind::Validator(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_plain_boundary_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+            }
+            DeclarationKind::Tool(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_tool_argument_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+                reject_invalid_boundary_type(
+                    &value.return_type,
+                    model.is_plain_boundary_data(&model.resolve_type(&value.return_type)),
+                    model,
+                    diagnostics,
+                );
+            }
+            DeclarationKind::Agent(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_external_input_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+                for field in &value.state {
+                    reject_invalid_boundary_type(
+                        &field.ty,
+                        model.is_plain_boundary_data(&model.resolve_type(&field.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+                for handler in &value.handlers {
+                    for parameter in &handler.parameters {
+                        reject_invalid_boundary_type(
+                            &parameter.ty,
+                            model.is_external_input_data(&model.resolve_type(&parameter.ty)),
+                            model,
+                            diagnostics,
+                        );
+                    }
+                    reject_invalid_boundary_type(
+                        &handler.return_type,
+                        model.is_plain_boundary_data(&model.resolve_type(&handler.return_type)),
+                        model,
+                        diagnostics,
+                    );
+                }
+            }
+            DeclarationKind::Type(_)
+            | DeclarationKind::Enum(_)
+            | DeclarationKind::Function(_)
+            | DeclarationKind::Flow(_)
+            | DeclarationKind::Policy(_) => {}
+        }
+    }
+}
+
+fn reject_invalid_boundary_type(
+    reference: &TypeReference,
+    valid: bool,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let ty = model.resolve_type(reference);
+    if !valid && !model.contains_candidate(&ty) && !model.contains_secret(&ty) {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                "privileged runtime wrappers cannot cross this JSON boundary",
+                reference.span.clone(),
+            )
+            .with_help("use ordinary declared data or a wrapper admitted by this boundary"),
+        );
+    }
+}
+
+fn reject_candidate_parameters(
+    parameters: &[aster_syntax::Parameter],
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for parameter in parameters {
+        reject_candidate_boundary(&parameter.ty, model, diagnostics);
+    }
+}
+
+fn reject_candidate_boundary(
+    reference: &TypeReference,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if model.contains_candidate(&model.resolve_type(reference)) {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::CandidateBeforeValidation.into(),
+                "Candidate values cannot cross external or persistent boundaries",
+                reference.span.clone(),
+            )
+            .with_help("validate the candidate and pass Checked<T> or ordinary data instead"),
+        );
+    }
+}
+
+fn reject_secret_parameters(
+    parameters: &[aster_syntax::Parameter],
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for parameter in parameters {
+        reject_secret_outside_tool_parameter(&parameter.ty, model, diagnostics);
+    }
+}
+
+fn reject_secret_outside_tool_parameter(
+    reference: &TypeReference,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if model.contains_secret(&model.resolve_type(reference)) {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::SecretInState.into(),
+                "Secret types are restricted to sensitivity-secret tool parameters",
+                reference.span.clone(),
+            )
+            .with_help("move the Secret handle to a tool parameter and mark the tool secret"),
+        );
+    }
+}
+
+fn check_parameter_types(
+    parameters: &[aster_syntax::Parameter],
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    check_duplicate_names(
+        parameters
+            .iter()
+            .map(|parameter| (&parameter.name, &parameter.span)),
+        "parameter",
+        diagnostics,
+    );
+    for parameter in parameters {
+        check_type_reference(&parameter.ty, model, diagnostics);
+    }
+}
+
+fn alias_reaches(
+    current: &str,
+    target: &str,
+    model: &Model<'_>,
+    visited: &mut BTreeSet<String>,
+) -> bool {
+    if !visited.insert(current.to_owned()) {
+        return false;
+    }
+    let result = model.types.get(current).is_some_and(|declaration| {
+        let TypeDefinition::Alias(reference) = &declaration.definition else {
+            return false;
+        };
+        type_reference_reaches(reference, target, model, visited)
+    });
+    visited.remove(current);
+    result
+}
+
+fn type_reference_reaches(
+    reference: &TypeReference,
+    target: &str,
+    model: &Model<'_>,
+    visited: &mut BTreeSet<String>,
+) -> bool {
+    let name = reference.path.as_string();
+    name == target
+        || reference
+            .arguments
+            .iter()
+            .any(|argument| type_reference_reaches(argument, target, model, visited))
+        || (model.types.contains_key(&name) && alias_reaches(&name, target, model, visited))
+}
+
+fn check_type_reference(
+    reference: &TypeReference,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let name = reference.path.as_string();
+    let expected_arity = match name.as_str() {
+        "Unit" | "Bool" | "Int" | "Text" | "Instant" | "Duration" | "ProvenanceRef" | "Error" => {
+            Some(0)
+        }
+        "Option" | "List" | "Incoming" | "Untrusted" | "Candidate" | "Checked" | "Observation"
+        | "Secret" | "Intent" | "Proposal" | "Permit" | "Receipt" | "Reconciled" => Some(1),
+        "Result" => Some(2),
+        _ if reference.arguments.is_empty()
+            && (model.types.contains_key(&name)
+                || model.enums.contains_key(&name)
+                || (name.ends_with(".State")
+                    && model.agents.contains_key(name.trim_end_matches(".State")))) =>
+        {
+            Some(0)
+        }
+        _ => None,
+    };
+    let Some(expected_arity) = expected_arity else {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::UnknownName.into(),
+                format!("unknown type `{name}`"),
+                reference.span.clone(),
+            )
+            .with_help("declare the type or use a documented ASTER 0.1 type"),
+        );
+        return;
+    };
+    if reference.arguments.len() != expected_arity {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                format!(
+                    "type `{name}` expects {expected_arity} argument(s), found {}",
+                    reference.arguments.len()
+                ),
+                reference.span.clone(),
+            )
+            .with_help("use the declared type constructor arity"),
+        );
+        return;
+    }
+    if matches!(
+        name.as_str(),
+        "Intent" | "Proposal" | "Permit" | "Receipt" | "Reconciled"
+    ) {
+        let symbol = &reference.arguments[0];
+        if !symbol.arguments.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::TypeMismatch.into(),
+                    "governance type arguments must be plain symbols",
+                    symbol.span.clone(),
+                )
+                .with_help("remove type arguments from the intent purpose or write action"),
+            );
+        }
+        if matches!(
+            name.as_str(),
+            "Proposal" | "Permit" | "Receipt" | "Reconciled"
+        ) {
+            let action = symbol.path.as_string();
+            if model
+                .tools
+                .get(&action)
+                .is_none_or(|tool| tool.metadata.mode != Some(ToolMode::Write))
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        KnownDiagnosticCode::UnknownName.into(),
+                        format!("governance action `{action}` is not a declared write tool"),
+                        symbol.span.clone(),
+                    )
+                    .with_help("use the path of a declared write-mode tool"),
+                );
+            }
+        }
+    } else {
+        for argument in &reference.arguments {
+            check_type_reference(argument, model, diagnostics);
+        }
+    }
+}
+
+fn check_duplicate_names<'a>(
+    values: impl IntoIterator<Item = (&'a String, &'a aster_diagnostics::Span)>,
+    identity: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut seen = BTreeSet::new();
+    for (name, span) in values {
+        if !seen.insert(name.as_str()) {
+            diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::DuplicateDeclaration.into(),
+                    format!("duplicate {identity} `{name}`"),
+                    span.clone(),
+                )
+                .with_help(format!("keep one {identity} with this name")),
+            );
+        }
+    }
+}
+
 fn check_duplicate_declarations(module: &Module, diagnostics: &mut Vec<Diagnostic>) {
     let mut seen = BTreeSet::new();
     for declaration in &module.declarations {
         let identity = declaration_identity(&declaration.kind);
+        let shadows_builtin = match &declaration.kind {
+            DeclarationKind::Type(value) => is_builtin_type_name(&value.name),
+            DeclarationKind::Enum(value) => is_builtin_type_name(&value.name),
+            _ => false,
+        };
+        if shadows_builtin {
+            diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::DuplicateDeclaration.into(),
+                    format!("built-in type cannot be shadowed by `{identity}`"),
+                    declaration.span.clone(),
+                )
+                .with_help("rename the user-defined type"),
+            );
+        }
         if !seen.insert(identity.clone()) {
             diagnostics.push(
                 Diagnostic::error(
@@ -106,6 +655,34 @@ fn check_duplicate_declarations(module: &Module, diagnostics: &mut Vec<Diagnosti
             );
         }
     }
+}
+
+fn is_builtin_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Unit"
+            | "Bool"
+            | "Int"
+            | "Text"
+            | "Instant"
+            | "Duration"
+            | "ProvenanceRef"
+            | "Error"
+            | "Option"
+            | "Result"
+            | "List"
+            | "Incoming"
+            | "Untrusted"
+            | "Candidate"
+            | "Checked"
+            | "Observation"
+            | "Secret"
+            | "Intent"
+            | "Proposal"
+            | "Permit"
+            | "Receipt"
+            | "Reconciled"
+    )
 }
 
 fn declaration_identity(declaration: &DeclarationKind) -> String {
@@ -124,6 +701,27 @@ fn declaration_identity(declaration: &DeclarationKind) -> String {
     }
 }
 
+fn check_capability_requests(
+    module: &Module,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for declaration in &module.declarations {
+        let (parameters, capabilities): (_, &[CapabilityExpression]) = match &declaration.kind {
+            DeclarationKind::Function(function) | DeclarationKind::Flow(function) => {
+                (&function.parameters, &function.uses)
+            }
+            DeclarationKind::Tool(tool) => (&tool.parameters, tool.metadata.capability.as_slice()),
+            DeclarationKind::Agent(agent) => (&agent.parameters, &agent.requires),
+            _ => continue,
+        };
+        let mut environment = environment_from_parameters(model, parameters);
+        for capability in capabilities {
+            check_capability_request(capability, &mut environment, model, diagnostics);
+        }
+    }
+}
+
 fn check_declaration_metadata(
     module: &Module,
     model: &Model<'_>,
@@ -132,6 +730,44 @@ fn check_declaration_metadata(
     for declaration in &module.declarations {
         match &declaration.kind {
             DeclarationKind::Prompt(prompt) => {
+                let mut data = BTreeSet::new();
+                let parameters: BTreeSet<_> = prompt
+                    .parameters
+                    .iter()
+                    .map(|parameter| parameter.name.as_str())
+                    .collect();
+                for name in &prompt.data {
+                    if !data.insert(name.as_str()) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                KnownDiagnosticCode::DuplicateDeclaration.into(),
+                                format!("duplicate prompt data name `{name}`"),
+                                declaration.span.clone(),
+                            )
+                            .with_help("list each prompt parameter exactly once"),
+                        );
+                    }
+                    if !parameters.contains(name.as_str()) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                KnownDiagnosticCode::UnknownName.into(),
+                                format!("prompt data name `{name}` is not a parameter"),
+                                declaration.span.clone(),
+                            )
+                            .with_help("list only declared prompt parameters"),
+                        );
+                    }
+                }
+                for parameter in parameters.difference(&data) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            KnownDiagnosticCode::TypeMismatch.into(),
+                            format!("prompt data omits parameter `{parameter}`"),
+                            declaration.span.clone(),
+                        )
+                        .with_help("list every prompt parameter exactly once"),
+                    );
+                }
                 for parameter in &prompt.parameters {
                     if model.contains_secret(&model.resolve_type(&parameter.ty)) {
                         diagnostics.push(
@@ -145,45 +781,279 @@ fn check_declaration_metadata(
                     }
                 }
             }
-            DeclarationKind::Tool(tool)
-                if tool.metadata.mode == Some(ToolMode::Write)
-                    && tool.metadata.idempotency.is_none() =>
+            DeclarationKind::Validator(validator)
+                if !(1..=2).contains(&validator.parameters.len()) =>
             {
                 diagnostics.push(
                     Diagnostic::error(
-                        KnownDiagnosticCode::MissingIdempotency.into(),
-                        "write tool is missing idempotency metadata",
+                        KnownDiagnosticCode::TypeMismatch.into(),
+                        "validator must accept one validation value or two reconciliation values",
                         declaration.span.clone(),
                     )
-                    .with_help("name a deterministic request parameter with `idempotency`"),
+                    .with_help("declare exactly one or two validator parameters"),
                 );
             }
-            DeclarationKind::Policy(policy)
-                if policy
-                    .rules
-                    .last()
-                    .is_none_or(|rule| rule.condition.is_some()) =>
-            {
-                diagnostics.push(
-                    Diagnostic::error(
-                        KnownDiagnosticCode::NonTotalPolicy.into(),
-                        "policy has no final otherwise rule",
-                        declaration.span.clone(),
-                    )
-                    .with_help("end the policy with an `otherwise` decision"),
-                );
+            DeclarationKind::Tool(tool) => {
+                check_tool_metadata(tool, &declaration.span, model, diagnostics);
             }
-            DeclarationKind::Agent(agent) => check_agent_metadata(agent, model, diagnostics),
+            DeclarationKind::Policy(policy) => {
+                check_policy_signature(policy, &declaration.span, model, diagnostics);
+                check_policy_totality(policy, &declaration.span, diagnostics);
+            }
+            DeclarationKind::Agent(agent) => {
+                check_agent_metadata(agent, &declaration.span, model, diagnostics);
+            }
             _ => {}
         }
     }
 }
 
-fn check_agent_metadata(
-    agent: &AgentDeclaration,
+fn check_policy_totality(
+    policy: &aster_syntax::PolicyDeclaration,
+    span: &aster_diagnostics::Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let has_final_otherwise = policy
+        .rules
+        .last()
+        .is_some_and(|rule| rule.condition.is_none());
+    let has_early_otherwise = policy
+        .rules
+        .iter()
+        .take(policy.rules.len().saturating_sub(1))
+        .any(|rule| rule.condition.is_none());
+    if has_final_otherwise && !has_early_otherwise {
+        return;
+    }
+    diagnostics.push(
+        Diagnostic::error(
+            KnownDiagnosticCode::NonTotalPolicy.into(),
+            "policy must have exactly one final otherwise rule",
+            span.clone(),
+        )
+        .with_help("end the policy with its only `otherwise` decision"),
+    );
+}
+
+fn check_policy_signature(
+    policy: &aster_syntax::PolicyDeclaration,
+    span: &aster_diagnostics::Span,
     model: &Model<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    if !(1..=2).contains(&policy.parameters.len()) {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                "policy must accept a proposal and at most one agent state snapshot",
+                span.clone(),
+            )
+            .with_help("declare `(proposal: Proposal<Action>)` with optional `state: Agent.State`"),
+        );
+    }
+    if policy
+        .parameters
+        .first()
+        .is_some_and(|parameter| !matches!(model.resolve_type(&parameter.ty), Type::Proposal(_)))
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                "policy first parameter must be Proposal<Action>",
+                policy.parameters[0].span.clone(),
+            )
+            .with_help("use the governed write action's proposal type"),
+        );
+    }
+    if policy
+        .parameters
+        .get(1)
+        .is_some_and(|parameter| !matches!(model.resolve_type(&parameter.ty), Type::AgentState(_)))
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                "policy second parameter must be Agent.State",
+                policy.parameters[1].span.clone(),
+            )
+            .with_help("use the authorizing agent's immutable state type"),
+        );
+    }
+}
+
+fn check_tool_metadata(
+    tool: &ToolDeclaration,
+    declaration_span: &aster_diagnostics::Span,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if tool.metadata.mode.is_none() {
+        missing_tool_metadata("mode", declaration_span, diagnostics);
+    }
+    if tool.metadata.capability.is_none() {
+        missing_tool_metadata("capability", declaration_span, diagnostics);
+    }
+    if tool.metadata.sensitivity.is_none() {
+        missing_tool_metadata("sensitivity", declaration_span, diagnostics);
+    }
+    if tool.metadata.mode == Some(ToolMode::Write) {
+        if tool.metadata.risk.is_none() {
+            missing_tool_metadata("risk", declaration_span, diagnostics);
+        }
+        match tool.metadata.idempotency.as_deref() {
+            None => diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::MissingIdempotency.into(),
+                    "write tool is missing idempotency metadata",
+                    declaration_span.clone(),
+                )
+                .with_help("name a deterministic request parameter with `idempotency`"),
+            ),
+            Some(name)
+                if !tool
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == name) =>
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        KnownDiagnosticCode::MissingIdempotency.into(),
+                        format!("idempotency parameter `{name}` is not declared"),
+                        declaration_span.clone(),
+                    )
+                    .with_help("name one of the write tool's declared parameters"),
+                );
+            }
+            Some(name) => {
+                let parameter = tool
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == name);
+                if parameter.is_some_and(|parameter| {
+                    !model.is_deterministically_serializable(&model.resolve_type(&parameter.ty))
+                }) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            KnownDiagnosticCode::MissingIdempotency.into(),
+                            format!(
+                                "idempotency parameter `{name}` is not deterministically serializable"
+                            ),
+                            declaration_span.clone(),
+                        )
+                        .with_help("use an ordinary deterministic data value as the key"),
+                    );
+                }
+            }
+        }
+    } else if tool.metadata.mode == Some(ToolMode::Read) {
+        if tool.metadata.risk.is_some() {
+            unexpected_tool_metadata("risk", declaration_span, diagnostics);
+        }
+        if tool.metadata.idempotency.is_some() {
+            unexpected_tool_metadata("idempotency", declaration_span, diagnostics);
+        }
+    }
+}
+
+fn check_capability_request(
+    capability: &CapabilityExpression,
+    environment: &mut crate::expression::Environment,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let name = capability.path.as_string();
+    let Some(declaration) = model.capabilities.get(&name) else {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::UnknownName.into(),
+                format!("unknown capability `{name}`"),
+                capability.path.span.clone(),
+            )
+            .with_help("declare the capability before requiring it"),
+        );
+        return;
+    };
+    let context = pure_context(Type::Unit);
+    ExpressionChecker::new(model, diagnostics).check_arguments(
+        &declaration.parameters,
+        &capability.arguments,
+        environment,
+        &context,
+        &capability.span,
+    );
+}
+
+fn missing_tool_metadata(
+    name: &str,
+    span: &aster_diagnostics::Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(
+            KnownDiagnosticCode::TypeMismatch.into(),
+            format!("tool is missing required `{name}` metadata"),
+            span.clone(),
+        )
+        .with_help(format!("declare exactly one `{name}` metadata entry")),
+    );
+}
+
+fn unexpected_tool_metadata(
+    name: &str,
+    span: &aster_diagnostics::Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    diagnostics.push(
+        Diagnostic::error(
+            KnownDiagnosticCode::TypeMismatch.into(),
+            format!("read tool cannot declare write-only `{name}` metadata"),
+            span.clone(),
+        )
+        .with_help(format!("remove the `{name}` metadata entry")),
+    );
+}
+
+fn check_agent_metadata(
+    agent: &AgentDeclaration,
+    declaration_span: &aster_diagnostics::Span,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if agent.handlers.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                "agents require at least one event handler",
+                declaration_span.clone(),
+            )
+            .with_help("declare an `on <event>(payload: Incoming<T>)` handler"),
+        );
+    }
+    for handler in &agent.handlers {
+        if handler.parameters.len() != 1 {
+            diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::TypeMismatch.into(),
+                    "event handlers accept exactly one payload parameter",
+                    handler.span.clone(),
+                )
+                .with_help("declare one parameter with type Incoming<T>"),
+            );
+        } else if !matches!(
+            model.normalized(&model.resolve_type(&handler.parameters[0].ty)),
+            Type::Incoming(_)
+        ) {
+            diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::TypeMismatch.into(),
+                    "event handler payload must have type Incoming<T>",
+                    handler.parameters[0].ty.span.clone(),
+                )
+                .with_help("wrap the external payload type in Incoming<...>"),
+            );
+        }
+    }
+
     for field in &agent.state {
         if model.contains_secret(&model.resolve_type(&field.ty)) {
             diagnostics.push(
@@ -251,7 +1121,9 @@ fn check_executable_bodies(module: &Module, model: &Model<'_>, diagnostics: &mut
                     }
                     match &rule.decision {
                         PolicyDecision::Approve(value) | PolicyDecision::Deny(value) => {
-                            checker.check_expression(value, &mut environment, &context);
+                            let actual =
+                                checker.check_expression(value, &mut environment, &context);
+                            checker.expect_type(&Type::Text, &actual, &value.span);
                         }
                         PolicyDecision::Allow => {}
                     }
@@ -272,6 +1144,23 @@ fn check_function(
     model: &Model<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    if !matches!(
+        function
+            .body
+            .statements
+            .last()
+            .map(|statement| &statement.kind),
+        Some(StatementKind::Return { .. })
+    ) {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                format!("callable `{}` has no final return statement", function.name),
+                function.body.span.clone(),
+            )
+            .with_help("end every function or flow with an explicit `return`"),
+        );
+    }
     let mut environment = environment_from_parameters(model, &function.parameters);
     let context = CheckContext {
         pure,
@@ -281,6 +1170,7 @@ fn check_function(
             .map(|capability| capability.path.as_string())
             .collect(),
         return_type: model.resolve_type(&function.return_type),
+        return_allowed: true,
         agent,
     };
     ExpressionChecker::new(model, diagnostics).check_block(
@@ -296,12 +1186,12 @@ fn check_agent_bodies(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut defaults = environment_from_parameters(model, &agent.parameters);
-    defaults.insert("self", Type::AgentState(agent.name.clone()));
     defaults.insert("event", Type::Event);
     let default_context = CheckContext {
         pure: true,
         allowed_capabilities: BTreeSet::new(),
         return_type: Type::Unit,
+        return_allowed: false,
         agent: Some(agent.name.clone()),
     };
     let mut checker = ExpressionChecker::new(model, diagnostics);
@@ -311,6 +1201,23 @@ fn check_agent_bodies(
     }
 
     for handler in &agent.handlers {
+        if !matches!(
+            handler
+                .body
+                .statements
+                .last()
+                .map(|statement| &statement.kind),
+            Some(StatementKind::Return { .. })
+        ) {
+            diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::TypeMismatch.into(),
+                    format!("handler `{}` has no final return statement", handler.event),
+                    handler.body.span.clone(),
+                )
+                .with_help("end every event handler with an explicit `return`"),
+            );
+        }
         let mut environment = environment_from_parameters(model, &agent.parameters);
         for parameter in &handler.parameters {
             environment.insert(&parameter.name, model.resolve_type(&parameter.ty));
@@ -325,6 +1232,7 @@ fn check_agent_bodies(
                 .map(|capability| capability.path.as_string())
                 .collect(),
             return_type: model.resolve_type(&handler.return_type),
+            return_allowed: true,
             agent: Some(agent.name.clone()),
         };
         ExpressionChecker::new(model, diagnostics).check_block(
@@ -340,6 +1248,7 @@ fn pure_context(return_type: Type) -> CheckContext {
         pure: true,
         allowed_capabilities: BTreeSet::new(),
         return_type,
+        return_allowed: false,
         agent: None,
     }
 }

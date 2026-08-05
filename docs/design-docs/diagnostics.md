@@ -106,7 +106,8 @@ rules. Rewrite it without recursion.
 
 ### ASTER-POLICY-4001 — non-total policy
 
-The policy lacks a final `otherwise` rule. Add a final deterministic denial.
+The policy does not have exactly one `otherwise` rule in final position. Remove
+any early `otherwise` and end with one deterministic fallback decision.
 
 ### ASTER-AFFINE-5001 — permit used after move
 
