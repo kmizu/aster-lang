@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="ASTER is a deterministic, auditable language and runtime for governed AI agents."
+    >
+    <meta name="theme-color" content="#0a0b0d">
+    <title>ASTER — Authority before action</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="site.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="brand" href="#hero" aria-label="ASTER home">
+        ASTER<span aria-hidden="true">°</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="#boundary">Concept</a>
+        <a href="#evidence">Evidence</a>
+        <a href="#download">Download</a>
+        <a href="https://github.com/kmizu/aster-lang">GitHub</a>
+      </nav>
+      <span class="header-version">v0.1.0</span>
+    </header>
+
+    <main id="main-content">
+      <section class="hero" id="hero" aria-labelledby="hero-title">
+        <div class="hero-wordmark" aria-hidden="true">ASTER</div>
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="hero-content">
+          <p class="eyebrow">Deterministic agent runtime / v0.1.0</p>
+          <p class="status-mark">Experimental reference processor</p>
+          <h1 id="hero-title">Authority<br>before action.</h1>
+          <p class="hero-lede">
+            Model output stays data. Every external action needs proof. Reality
+            is checked after the effect.
+          </p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#download">
+              Download v0.1.0 <span aria-hidden="true">↓</span>
+            </a>
+            <a
+              class="button button-secondary"
+              href="https://github.com/kmizu/aster-lang/blob/v0.1.0/docs/spec/aster-0.1.md"
+            >
+              Read the specification <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+        </div>
+
+        <ol class="hero-trace" aria-label="ASTER authority boundary">
+          <li class="trace-stage" data-trace-stage>
+            <span class="trace-index">01</span>
+            <strong>Candidate</strong>
+            <span>Opaque model output</span>
+          </li>
+          <li class="trace-stage" data-trace-stage>
+            <span class="trace-index">02</span>
+            <strong>Proposal</strong>
+            <span>Immutable action intent</span>
+          </li>
+          <li class="trace-stage" data-trace-stage>
+            <span class="trace-index">03</span>
+            <strong>Permit</strong>
+            <span>Single-use authority</span>
+          </li>
+          <li class="trace-stage" data-trace-stage>
+            <span class="trace-index">04</span>
+            <strong>Reconciliation</strong>
+            <span>Reality checked</span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="boundary section-dark" id="boundary" aria-labelledby="boundary-title">
+        <div class="section-heading reveal" data-reveal>
+          <p class="section-index">01 / The authority boundary</p>
+          <h2 id="boundary-title">The model is an oracle.<br>Never a principal.</h2>
+          <p>
+            ASTER keeps inference, intent, authority, execution, and observed
+            reality as separate typed transitions. There is no ambient shortcut
+            between them.
+          </p>
+        </div>
+
+        <div class="boundary-flow" aria-label="Four governed value transitions">
+          <article class="boundary-step reveal" data-reveal>
+            <span class="boundary-number">01</span>
+            <h3>Candidate&lt;T&gt;</h3>
+            <p>Inference returns opaque data. It cannot be coerced, inspected, persisted, or executed.</p>
+            <strong>Data, not command</strong>
+          </article>
+          <article class="boundary-step reveal" data-reveal>
+            <span class="boundary-number">02</span>
+            <h3>Proposal&lt;A&gt;</h3>
+            <p>The desired write is sealed with its arguments, budget, identity, and policy evidence.</p>
+            <strong>Intent, not effect</strong>
+          </article>
+          <article class="boundary-step reveal" data-reveal>
+            <span class="boundary-number">03</span>
+            <h3>Permit&lt;A&gt;</h3>
+            <p>Authority is expiring, affine, and cryptographically bound to one immutable proposal.</p>
+            <strong>Scoped, then consumed</strong>
+          </article>
+          <article class="boundary-step reveal" data-reveal>
+            <span class="boundary-number">04</span>
+            <h3>Reconciled&lt;A&gt;</h3>
+            <p>A receipt is not success. A later observation must agree before state can publish.</p>
+            <strong>Evidence, then state</strong>
+          </article>
+        </div>
+      </section>
+
+      <section class="evidence section-dark" id="evidence" aria-labelledby="evidence-title">
+        <div class="section-heading evidence-heading reveal" data-reveal>
+          <p class="section-index">02 / Executable evidence</p>
+          <h2 id="evidence-title">From source to replay,<br>the boundary stays visible.</h2>
+          <p>
+            The bundled meeting scheduler exercises inference, validation, a
+            read, human approval, a write, reconciliation, transactional state,
+            snapshots, and driver-free replay.
+          </p>
+        </div>
+
+        <div class="evidence-grid">
+          <div class="source-panel reveal" data-reveal aria-label="ASTER meeting workflow source">
+            <div class="panel-label">
+              <span>meeting-scheduler/main.aster</span>
+              <span>governed flow</span>
+            </div>
+            <pre><code><span class="code-dim">// Untrusted input cannot cross the boundary.</span>
+<span class="code-keyword">let</span> candidate = <span class="code-effect">infer</span> ParseMeeting(
+  text = incoming.value.text,
+) using @planner;
+
+<span class="code-keyword">let</span> checked = <span class="code-effect">validate</span> candidate
+  with MeetingValidator;
+
+<span class="code-keyword">let</span> slots = <span class="code-effect">observe</span>
+  calendar.free_slots(request = checked.value);
+
+<span class="code-keyword">let</span> action = <span class="code-effect">intent</span> Calendar.CreateEvent {
+  basis = checked.value.provenance;
+  title = checked.value.title;
+  start = slots.value.first;
+}
+
+<span class="code-keyword">let</span> proposal = <span class="code-effect">propose</span>
+  calendar.create(action = action) <span class="code-keyword">for</span> action;
+<span class="code-keyword">let</span> permit = <span class="code-effect">authorize</span> proposal
+  using SchedulingPolicy;
+<span class="code-keyword">let</span> receipt = <span class="code-effect">commit</span> proposal
+  with permit;
+<span class="code-keyword">return</span> <span class="code-effect">reconcile</span> receipt against
+  <span class="code-effect">observe</span> calendar.lookup(id = receipt.value.id)
+  with EventMatches;</code></pre>
+          </div>
+
+          <div class="ledger reveal" data-reveal aria-label="Recorded ASTER trace">
+            <div class="panel-label">
+              <span>record / replay ledger</span>
+              <span>sha-256 chain</span>
+            </div>
+            <ol>
+              <li>
+                <span>01</span>
+                <div><strong>MODEL_RESULT_RECORDED</strong><small>Candidate sealed with provenance</small></div>
+                <code>7d91…</code>
+              </li>
+              <li>
+                <span>02</span>
+                <div><strong>OBSERVATION_MATCHED</strong><small>Budget reserved before driver</small></div>
+                <code>1 / 8</code>
+              </li>
+              <li>
+                <span>03</span>
+                <div><strong>PROPOSAL_BOUND</strong><small>Action and arguments immutable</small></div>
+                <code>0c2e…</code>
+              </li>
+              <li>
+                <span>04</span>
+                <div><strong>PERMIT_CONSUMED</strong><small>Matching issued identity used once</small></div>
+                <code>affine</code>
+              </li>
+              <li>
+                <span>05</span>
+                <div><strong>RECONCILIATION_OK</strong><small>Transactional state published</small></div>
+                <code>settled</code>
+              </li>
+              <li class="ledger-result">
+                <span>↺</span>
+                <div><strong>REPLAY_COMPLETE</strong><small>Every canonical request matched</small></div>
+                <code>driver calls 0</code>
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="evidence-rule reveal" data-reveal>
+          <p>Record mode invokes the fixture driver.</p>
+          <span aria-hidden="true">≠</span>
+          <p>Replay mode has no driver parameter.</p>
+        </div>
+      </section>
+
+      <section class="download section-light" id="download" aria-labelledby="download-title">
+        <div class="download-intro reveal" data-reveal>
+          <p class="section-index">03 / ASTER v0.1.0</p>
+          <h2 id="download-title">Run the reference processor.</h2>
+          <p>
+            Choose a native command-line archive. Every build ships with this
+            README and license; checksums are published beside the release.
+          </p>
+        </div>
+
+        <div class="download-list" aria-label="ASTER v0.1.0 downloads">
+          <a
+            class="download-row reveal"
+            data-reveal
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz"
+          >
+            <span class="download-platform">Linux</span>
+            <span class="download-target">x86_64 / musl</span>
+            <span class="download-format">.tar.gz</span>
+            <span class="download-arrow" aria-hidden="true">↓</span>
+          </a>
+          <a
+            class="download-row reveal"
+            data-reveal
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/aster-v0.1.0-aarch64-apple-darwin.tar.gz"
+          >
+            <span class="download-platform">macOS</span>
+            <span class="download-target">Apple Silicon</span>
+            <span class="download-format">.tar.gz</span>
+            <span class="download-arrow" aria-hidden="true">↓</span>
+          </a>
+          <a
+            class="download-row reveal"
+            data-reveal
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/aster-v0.1.0-x86_64-apple-darwin.tar.gz"
+          >
+            <span class="download-platform">macOS</span>
+            <span class="download-target">Intel</span>
+            <span class="download-format">.tar.gz</span>
+            <span class="download-arrow" aria-hidden="true">↓</span>
+          </a>
+          <a
+            class="download-row reveal"
+            data-reveal
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/aster-v0.1.0-x86_64-pc-windows-msvc.zip"
+          >
+            <span class="download-platform">Windows</span>
+            <span class="download-target">x86_64 / MSVC</span>
+            <span class="download-format">.zip</span>
+            <span class="download-arrow" aria-hidden="true">↓</span>
+          </a>
+        </div>
+
+        <div class="verify-block reveal" data-reveal>
+          <div>
+            <p class="verify-label">Verify every archive</p>
+            <code>sha256sum --check SHA256SUMS</code>
+          </div>
+          <a
+            class="checksum-link"
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/SHA256SUMS"
+          >
+            Download SHA256SUMS <span aria-hidden="true">↓</span>
+          </a>
+        </div>
+
+        <div class="release-meta reveal" data-reveal>
+          <span>Version <strong>0.1.0</strong></span>
+          <span>Toolchain <strong>Rust 1.96</strong></span>
+          <span>License <strong>Apache-2.0</strong></span>
+          <span>Drivers <strong>Fixtures only</strong></span>
+        </div>
+      </section>
+
+      <section class="scope section-dark" aria-labelledby="scope-title">
+        <div class="section-heading reveal" data-reveal>
+          <p class="section-index">04 / Honest scope</p>
+          <h2 id="scope-title">A complete vertical slice.<br>Not a production platform.</h2>
+        </div>
+        <div class="scope-columns">
+          <div class="scope-column reveal" data-reveal>
+            <h3>Implemented in 0.1</h3>
+            <ul>
+              <li>Typed candidates, proposals, permits, and reconciliation</li>
+              <li>Capabilities, budgets, pure policies, and human approval</li>
+              <li>Transactional state, hash-chained traces, and snapshots</li>
+              <li>Deterministic record, resume, and driver-free replay</li>
+            </ul>
+          </div>
+          <div class="scope-column scope-excluded reveal" data-reveal>
+            <h3>Deliberately excluded</h3>
+            <ul>
+              <li>Live model, network, shell, or native provider access</li>
+              <li>Packages, concurrency, loops, recursion, or arbitrary eval</li>
+              <li>Production key management or trace encryption</li>
+              <li>Distributed execution or malicious-host protection</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section class="docs section-dark" id="docs" aria-labelledby="docs-title">
+        <div class="docs-heading reveal" data-reveal>
+          <p class="section-index">05 / Inspect the system</p>
+          <h2 id="docs-title">The documentation<br>is the system of record.</h2>
+        </div>
+        <div class="docs-links">
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.1.0/docs/spec/aster-0.1.md">
+            <span>01</span><strong>Normative specification</strong><i aria-hidden="true">↗</i>
+          </a>
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.1.0/ARCHITECTURE.md">
+            <span>02</span><strong>Architecture</strong><i aria-hidden="true">↗</i>
+          </a>
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.1.0/docs/design-docs/security-model.md">
+            <span>03</span><strong>Security model</strong><i aria-hidden="true">↗</i>
+          </a>
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/releases/tag/v0.1.0">
+            <span>04</span><strong>Release notes</strong><i aria-hidden="true">↗</i>
+          </a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <a class="footer-brand" href="#hero">ASTER°</a>
+      <p>Deterministic authority for governed agents.</p>
+      <div>
+        <a href="https://github.com/kmizu/aster-lang">Source</a>
+        <a href="https://github.com/kmizu/aster-lang/blob/v0.1.0/LICENSE">Apache-2.0</a>
+      </div>
+    </footer>
+  </body>
+</html>
