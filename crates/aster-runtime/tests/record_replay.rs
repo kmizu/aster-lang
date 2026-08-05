@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use aster_ir::lower;
 use aster_runtime::{
-    EffectKind, FixtureDriver, FixtureEntry, FixtureSet, ReplayError, StartRequest, canonical_json,
-    record_run, replay_run,
+    CapabilityGrant, CapabilityGrants, EffectKind, FixtureDriver, FixtureEntry, FixtureSet,
+    ReplayError, StartRequest, canonical_json, record_run, replay_run,
 };
 use aster_semantics::check_source;
 use aster_syntax::SourceFile;
@@ -33,7 +33,21 @@ fn start_request() -> StartRequest {
             ("profile".to_owned(), json!({"known_attendees": []})),
             ("last_event".to_owned(), Value::Null),
         ]),
-        grant_fingerprint: "grants-001".to_owned(),
+        capabilities: CapabilityGrants {
+            schema_version: 1,
+            grants: [
+                ("ModelUse", json!("planner")),
+                ("CalendarRead", json!("user-001")),
+                ("CalendarWrite", json!("user-001")),
+                ("HumanApproval", json!("user-001")),
+            ]
+            .into_iter()
+            .map(|(capability, argument)| CapabilityGrant {
+                capability: capability.to_owned(),
+                arguments: vec![argument],
+            })
+            .collect(),
+        },
     }
 }
 

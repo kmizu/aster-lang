@@ -5,6 +5,7 @@
 mod authority;
 mod budget;
 mod canonical;
+mod capability;
 mod fixture;
 mod machine;
 mod run;
@@ -14,6 +15,7 @@ mod value;
 pub use authority::{AuthorityError, AuthorityLedger, Intent, Permit, Proposal};
 pub use budget::{Budget, BudgetDimension, BudgetError, Reservation};
 pub use canonical::{CanonicalError, canonical_json, canonical_sha256};
+pub use capability::{CapabilityError, CapabilityGrant, CapabilityGrants};
 pub use fixture::{
     DriverError, EffectDriver, FixtureDriver, FixtureEntry, FixturePreview, FixtureSet,
 };

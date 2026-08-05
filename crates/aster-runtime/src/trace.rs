@@ -94,6 +94,46 @@ impl Trace {
         }
         Ok(())
     }
+
+    /// Encodes the trace as canonical append-only JSON Lines.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid chain or canonical serialization failure.
+    pub fn to_json_lines(&self) -> Result<String, TraceError> {
+        self.verify()?;
+        let mut output = String::new();
+        for entry in &self.entries {
+            output.push_str(&crate::canonical_json(entry)?);
+            output.push('\n');
+        }
+        Ok(output)
+    }
+
+    /// Decodes and verifies a complete JSON Lines trace.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed lines, empty traces, or any chain divergence.
+    pub fn from_json_lines(input: &str) -> Result<Self, TraceError> {
+        let entries = input
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| !line.trim().is_empty())
+            .map(|(index, line)| {
+                serde_json::from_str(line).map_err(|_| TraceError::MalformedLine {
+                    sequence: u64::try_from(index).unwrap_or(u64::MAX),
+                })
+            })
+            .collect::<Result<Vec<TraceEntry>, _>>()?;
+        let run_id = entries
+            .first()
+            .map(|entry| entry.run_id.clone())
+            .ok_or(TraceError::Empty)?;
+        let trace = Self { run_id, entries };
+        trace.verify()?;
+        Ok(trace)
+    }
 }
 
 /// Trace construction or verification failure.
@@ -114,18 +154,27 @@ pub enum TraceError {
     /// Entry content differs from its claimed hash.
     #[error("trace hash mismatch at sequence {sequence}")]
     HashMismatch { sequence: u64 },
+    /// A JSONL record could not be decoded.
+    #[error("malformed trace line at sequence {sequence}")]
+    MalformedLine { sequence: u64 },
+    /// A trace must contain at least its run header.
+    #[error("trace is empty")]
+    Empty,
 }
 
 impl PartialEq for TraceError {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Canonical(_), Self::Canonical(_)) | (Self::TooLong, Self::TooLong) => true,
+            (Self::Canonical(_), Self::Canonical(_))
+            | (Self::TooLong, Self::TooLong)
+            | (Self::Empty, Self::Empty) => true,
             (
                 Self::MetadataMismatch { sequence: left },
                 Self::MetadataMismatch { sequence: right },
             )
             | (Self::LinkMismatch { sequence: left }, Self::LinkMismatch { sequence: right })
-            | (Self::HashMismatch { sequence: left }, Self::HashMismatch { sequence: right }) => {
+            | (Self::HashMismatch { sequence: left }, Self::HashMismatch { sequence: right })
+            | (Self::MalformedLine { sequence: left }, Self::MalformedLine { sequence: right }) => {
                 left == right
             }
             _ => false,

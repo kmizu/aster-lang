@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "event_id": "evt-001",
+  "event_time": "2026-08-05T12:00:00Z",
+  "agent_arguments": {
+    "user": "user-001"
+  },
+  "payload": {
+    "text": "Schedule a 30 minute meeting with new.person@example.test"
+  }
+}

@@ -83,6 +83,19 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   variable-usage reservation, counted resolution, record-mode hash-chain traces,
   and driver-free semantic replay. The meeting record and replay produce the
   same canonical final state; changed input fails before effects.
+- 2026-08-05: Replaced caller-supplied grant fingerprints with versioned exact
+  capability grants. Agent admission and every model/read/approval/write
+  boundary now verify the canonical capability request before an effect can be
+  yielded; snapshots retain only the verified fingerprint and exact request
+  hashes.
+- 2026-08-05: Added strict typed decoding for event/state/model/tool boundaries,
+  alias expansion, unknown-state/record-field rejection, canonical UTC instant
+  validation with cross-day `add_seconds`, and state-default initialization.
+- 2026-08-05: Implemented the `aster` binary with check, format, AST JSON,
+  fixture-backed run, driver-free replay, durable resume, explain, atomic state
+  and snapshot writes, and canonical hash-chained JSON Lines trace persistence.
+  Added all four versioned meeting-scheduler input artifacts and demonstrated
+  byte-identical record/replay output through the public CLI.
 
 ## Discoveries and deviations
 

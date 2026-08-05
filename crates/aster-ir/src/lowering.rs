@@ -135,8 +135,13 @@ fn catalog(module: &Module) -> Result<Catalog, LoweringError> {
     let mut catalog = Catalog::default();
     for declaration in &module.declarations {
         match &declaration.kind {
-            DeclarationKind::Type(value) => {
-                if let TypeDefinition::Record(fields) = &value.definition {
+            DeclarationKind::Type(value) => match &value.definition {
+                TypeDefinition::Alias(target) => {
+                    catalog
+                        .aliases
+                        .insert(value.name.clone(), type_spec(target));
+                }
+                TypeDefinition::Record(fields) => {
                     catalog.records.insert(
                         value.name.clone(),
                         fields
@@ -148,7 +153,7 @@ fn catalog(module: &Module) -> Result<Catalog, LoweringError> {
                             .collect(),
                     );
                 }
-            }
+            },
             DeclarationKind::Prompt(value) => {
                 catalog.prompts.insert(
                     value.name.clone(),

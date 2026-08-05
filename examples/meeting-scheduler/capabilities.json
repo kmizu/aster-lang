@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "grants": [
+    {
+      "capability": "ModelUse",
+      "arguments": ["planner"]
+    },
+    {
+      "capability": "CalendarRead",
+      "arguments": ["user-001"]
+    },
+    {
+      "capability": "CalendarWrite",
+      "arguments": ["user-001"]
+    },
+    {
+      "capability": "HumanApproval",
+      "arguments": ["user-001"]
+    }
+  ]
+}

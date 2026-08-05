@@ -16,8 +16,9 @@ pub enum CanonicalError {
 /// # Errors
 ///
 /// Returns an error if JSON serialization fails.
-pub fn canonical_json(value: &Value) -> Result<String, CanonicalError> {
-    serde_json::to_string(&canonicalize(value)).map_err(CanonicalError::Serialization)
+pub fn canonical_json<T: Serialize>(value: &T) -> Result<String, CanonicalError> {
+    let value = serde_json::to_value(value).map_err(CanonicalError::Serialization)?;
+    serde_json::to_string(&canonicalize(&value)).map_err(CanonicalError::Serialization)
 }
 
 /// Hashes any serializable value through recursively key-sorted JSON.
@@ -26,8 +27,7 @@ pub fn canonical_json(value: &Value) -> Result<String, CanonicalError> {
 ///
 /// Returns an error if conversion or serialization fails.
 pub fn canonical_sha256<T: Serialize>(value: &T) -> Result<String, CanonicalError> {
-    let value = serde_json::to_value(value).map_err(CanonicalError::Serialization)?;
-    let bytes = canonical_json(&value)?;
+    let bytes = canonical_json(value)?;
     Ok(hex::encode(Sha256::digest(bytes.as_bytes())))
 }
 

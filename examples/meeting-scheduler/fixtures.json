@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "kind": "model",
+      "identity": "ParseMeeting",
+      "match_request": {
+        "model_alias": "planner"
+      },
+      "response": {
+        "title": "Planning",
+        "attendees": ["new.person@example.test"],
+        "duration_minutes": 30
+      },
+      "max_usage": {
+        "model_tokens": 100
+      },
+      "actual_usage": {
+        "model_tokens": 20
+      }
+    },
+    {
+      "kind": "read",
+      "identity": "Calendar.free",
+      "match_request": {
+        "arguments": {
+          "owner": "user-001",
+          "duration_minutes": 30
+        }
+      },
+      "response": [
+        {
+          "id": "slot-001"
+        }
+      ],
+      "max_usage": {},
+      "actual_usage": {}
+    },
+    {
+      "kind": "approval",
+      "identity": "CalendarPolicy",
+      "match_request": {
+        "principal": "user-001"
+      },
+      "response": {
+        "approved": true
+      },
+      "max_usage": {},
+      "actual_usage": {}
+    },
+    {
+      "kind": "write",
+      "identity": "Calendar.create",
+      "match_request": {
+        "arguments": {
+          "request_id": "evt-001"
+        }
+      },
+      "response": {
+        "id": "event-001"
+      },
+      "max_usage": {},
+      "actual_usage": {}
+    },
+    {
+      "kind": "read",
+      "identity": "Calendar.lookup",
+      "match_request": {
+        "arguments": {
+          "event_id": "event-001"
+        }
+      },
+      "response": {
+        "id": "event-001"
+      },
+      "max_usage": {},
+      "actual_usage": {}
+    }
+  ]
+}

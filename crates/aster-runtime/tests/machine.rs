@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use aster_ir::lower;
 use aster_runtime::{
-    EffectKind, EffectResolution, Machine, MachineError, MachineSnapshot, StartRequest, Step,
+    CapabilityGrant, CapabilityGrants, EffectKind, EffectResolution, Machine, MachineError,
+    MachineSnapshot, StartRequest, Step,
 };
 use aster_semantics::check_source;
 use aster_syntax::SourceFile;
@@ -40,6 +41,19 @@ agent A() requires [ModelUse("planner")] {
     lower(&check_source(&source).expect("source checks")).expect("source lowers")
 }
 
+fn grants(entries: &[(&str, JsonValue)]) -> CapabilityGrants {
+    CapabilityGrants {
+        schema_version: 1,
+        grants: entries
+            .iter()
+            .map(|(capability, argument)| CapabilityGrant {
+                capability: (*capability).to_owned(),
+                arguments: vec![argument.clone()],
+            })
+            .collect(),
+    }
+}
+
 #[test]
 fn direct_allow_write_path_never_yields_approval() {
     // Catches policy evaluation that turns every authorization into approval.
@@ -54,7 +68,7 @@ fn direct_allow_write_path_never_yields_approval() {
             agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
             payload: json!("save"),
             state: BTreeMap::new(),
-            grant_fingerprint: "grants-001".to_owned(),
+            capabilities: grants(&[("Read", json!("user-001")), ("Write", json!("user-001"))]),
         },
     )
     .expect("machine starts");
@@ -113,7 +127,12 @@ fn meeting_scheduler_runs_full_approval_and_reconciliation_path() {
                 ("profile".to_owned(), json!({"known_attendees": []})),
                 ("last_event".to_owned(), JsonValue::Null),
             ]),
-            grant_fingerprint: "grants-001".to_owned(),
+            capabilities: grants(&[
+                ("ModelUse", json!("planner")),
+                ("CalendarRead", json!("user-001")),
+                ("CalendarWrite", json!("user-001")),
+                ("HumanApproval", json!("user-001")),
+            ]),
         },
     )
     .expect("machine starts");
@@ -174,7 +193,7 @@ fn machine_yields_resumes_and_round_trips_pending_snapshot() {
         agent_arguments: BTreeMap::new(),
         payload: json!({"text": "hello"}),
         state: BTreeMap::new(),
-        grant_fingerprint: "grants-001".to_owned(),
+        capabilities: grants(&[("ModelUse", json!("planner"))]),
     };
     let mut machine = Machine::start(program.clone(), request).expect("machine starts");
 

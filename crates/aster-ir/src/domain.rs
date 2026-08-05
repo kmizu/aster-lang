@@ -135,6 +135,8 @@ pub struct Agent {
 /// Runtime-relevant declaration catalog.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Catalog {
+    /// Non-generic aliases expanded at external decode boundaries.
+    pub aliases: BTreeMap<String, TypeSpec>,
     /// Record schemas.
     pub records: BTreeMap<String, Vec<FieldSpec>>,
     /// Static prompts.

@@ -1,16 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aster_ir::{
-    CapabilitySpec, InstructionKind, NamedExpression, NamedValue, PatternSpec, PolicyDecisionSpec,
-    Program, PureExpression, TypeSpec, ValueId,
+    Agent, CapabilitySpec, InstructionKind, NamedExpression, NamedValue, PatternSpec,
+    PolicyDecisionSpec, Program, PureExpression, TypeSpec, ValueId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
 use thiserror::Error;
 
+use crate::capability::CompiledGrants;
 use crate::{
-    AuthorityLedger, Budget, BudgetDimension, Intent, Proposal, ReceiptValue, Reservation,
-    RuntimeValue, canonical_sha256, snapshot_values,
+    AuthorityLedger, Budget, BudgetDimension, CapabilityGrants, Intent, Proposal, ReceiptValue,
+    Reservation, RuntimeValue, canonical_sha256, snapshot_values,
 };
 
 /// Validated inputs needed to start one agent event.
@@ -23,7 +24,7 @@ pub struct StartRequest {
     pub agent_arguments: BTreeMap<String, JsonValue>,
     pub payload: JsonValue,
     pub state: BTreeMap<String, JsonValue>,
-    pub grant_fingerprint: String,
+    pub capabilities: CapabilityGrants,
 }
 
 /// External effect categories exposed by the VM boundary.
@@ -76,8 +77,12 @@ struct PendingEffect {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum PendingCompletion {
-    Model,
-    Read,
+    Model {
+        expected_type: TypeSpec,
+    },
+    Read {
+        expected_type: TypeSpec,
+    },
     Approval {
         proposal: Box<Proposal>,
         policy: String,
@@ -86,6 +91,7 @@ enum PendingCompletion {
     Write {
         action: String,
         proposal_hash: String,
+        expected_type: TypeSpec,
     },
 }
 
@@ -105,6 +111,7 @@ pub struct MachineSnapshot {
     pub pending_state: BTreeMap<String, RuntimeValue>,
     pub budget: Budget,
     pub grant_fingerprint: String,
+    grant_request_hashes: BTreeSet<String>,
     pub authority: AuthorityLedger,
     pub trace_position: u64,
     pub trace_hash: String,
@@ -213,6 +220,12 @@ impl Machine {
     ///
     /// Rejects unknown agents/events and malformed typed boundary values.
     pub fn start(program: Program, request: StartRequest) -> Result<Self, MachineError> {
+        validate_instant(&request.event_time)?;
+        let compiled_grants = request
+            .capabilities
+            .clone()
+            .compile()
+            .map_err(|error| MachineError::Capability(error.to_string()))?;
         let agent = program
             .agents
             .get(&request.agent)
@@ -239,11 +252,8 @@ impl Machine {
             handler_parameter.name.clone(),
             decode_json(&request.payload, &handler_parameter.ty, &program)?,
         );
-        let current_state = request
-            .state
-            .iter()
-            .map(|(name, value)| Ok((name.clone(), json_to_runtime(value)?)))
-            .collect::<Result<BTreeMap<_, _>, MachineError>>()?;
+        validate_declared_capabilities(&agent.capabilities, &locals, &program, &compiled_grants)?;
+        let current_state = initial_state(agent, &request.state, &locals, &program)?;
         let mut self_record = current_state.clone();
         for (name, value) in &locals {
             if agent
@@ -270,11 +280,7 @@ impl Machine {
         );
         let input_hash = canonical_sha256(&request)
             .map_err(|error| MachineError::Serialization(error.to_string()))?;
-        let limits = agent
-            .budget
-            .iter()
-            .filter_map(|(name, value)| budget_dimension(name).map(|dimension| (dimension, *value)))
-            .collect();
+        let limits = budget_limits(&agent.budget);
         let snapshot = MachineSnapshot {
             schema_version: 1,
             runtime_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -294,7 +300,8 @@ impl Machine {
             current_state,
             pending_state: BTreeMap::new(),
             budget: Budget::new(limits),
-            grant_fingerprint: request.grant_fingerprint,
+            grant_fingerprint: compiled_grants.fingerprint,
+            grant_request_hashes: compiled_grants.request_hashes,
             authority: AuthorityLedger::default(),
             trace_position: 0,
             trace_hash: String::new(),
@@ -383,12 +390,16 @@ impl Machine {
                 .map_err(|error| MachineError::Budget(error.to_string()))?;
         }
         let value = match pending.completion {
-            PendingCompletion::Model => RuntimeValue::Result(Ok(Box::new(
-                RuntimeValue::Candidate(Box::new(json_to_runtime(&resolution.payload)?)),
-            ))),
-            PendingCompletion::Read => RuntimeValue::Result(Ok(Box::new(
-                RuntimeValue::Observation(Box::new(json_to_runtime(&resolution.payload)?)),
-            ))),
+            PendingCompletion::Model { expected_type } => {
+                RuntimeValue::Result(Ok(Box::new(RuntimeValue::Candidate(Box::new(
+                    decode_json(&resolution.payload, &expected_type, &self.program)?,
+                )))))
+            }
+            PendingCompletion::Read { expected_type } => {
+                RuntimeValue::Result(Ok(Box::new(RuntimeValue::Observation(Box::new(
+                    decode_json(&resolution.payload, &expected_type, &self.program)?,
+                )))))
+            }
             PendingCompletion::Approval {
                 proposal,
                 policy,
@@ -414,10 +425,15 @@ impl Machine {
             PendingCompletion::Write {
                 action,
                 proposal_hash,
+                expected_type,
             } => RuntimeValue::Result(Ok(Box::new(RuntimeValue::Receipt(ReceiptValue {
                 action,
                 proposal_hash,
-                value: Box::new(json_to_runtime(&resolution.payload)?),
+                value: Box::new(decode_json(
+                    &resolution.payload,
+                    &expected_type,
+                    &self.program,
+                )?),
             })))),
         };
         self.frame_mut()?.slots.insert(pending.target, value);
@@ -579,10 +595,24 @@ impl Machine {
         arguments: &[NamedValue],
         model_alias: &str,
     ) -> Result<Step, MachineError> {
+        let prompt_spec = self
+            .program
+            .catalog
+            .prompts
+            .get(&prompt)
+            .cloned()
+            .ok_or(MachineError::UnknownPrompt)?;
+        self.require_capability(&json!({
+            "capability": "ModelUse",
+            "arguments": [model_alias],
+        }))?;
         let payload = json!({
             "prompt": prompt,
+            "instruction": prompt_spec.instruction,
             "model_alias": model_alias,
-            "arguments": self.named_values_json(arguments)?,
+            "data": self.named_values_json(arguments)?,
+            "expected_type": prompt_spec.result_type,
+            "source_provenance": self.program.source_hash,
         });
         let reservation = self
             .snapshot
@@ -595,7 +625,9 @@ impl Machine {
             target,
             reservation: Some(reservation),
             usage_reservations: BTreeMap::new(),
-            completion: PendingCompletion::Model,
+            completion: PendingCompletion::Model {
+                expected_type: prompt_spec.result_type,
+            },
         });
         Ok(Step::Yield(request))
     }
@@ -750,9 +782,26 @@ impl Machine {
         action: String,
         arguments: &[NamedValue],
     ) -> Result<Step, MachineError> {
+        let tool = self
+            .program
+            .catalog
+            .tools
+            .get(&action)
+            .cloned()
+            .ok_or(MachineError::UnknownTool)?;
+        let arguments_json = self.named_values_json(arguments)?;
+        let arguments_map = arguments_json
+            .as_object()
+            .cloned()
+            .ok_or_else(|| MachineError::TypeMismatch("observation arguments".to_owned()))?
+            .into_iter()
+            .collect();
+        let capability_request =
+            self.capability_request_json(tool.capability.as_ref(), &arguments_map)?;
+        self.require_capability(&capability_request)?;
         let payload = json!({
             "action": action,
-            "arguments": self.named_values_json(arguments)?,
+            "arguments": arguments_json,
         });
         let reservation = self
             .snapshot
@@ -765,7 +814,9 @@ impl Machine {
             target,
             reservation: Some(reservation),
             usage_reservations: BTreeMap::new(),
-            completion: PendingCompletion::Read,
+            completion: PendingCompletion::Read {
+                expected_type: tool.result_type,
+            },
         });
         Ok(Step::Yield(request))
     }
@@ -826,6 +877,7 @@ impl Machine {
             .ok_or(MachineError::MissingIdempotency)?;
         let capability_request =
             self.capability_request_json(tool.capability.as_ref(), &arguments_map)?;
+        self.require_capability(&capability_request)?;
         let proposal = Proposal::new(
             action,
             arguments_map,
@@ -869,10 +921,15 @@ impl Machine {
                 Ok(None)
             }
             PolicyRuntimeDecision::Approve(principal) if approval_may_suspend => {
+                let principal_json = runtime_to_json(&principal)?;
+                self.require_capability(&json!({
+                    "capability": "HumanApproval",
+                    "arguments": [principal_json],
+                }))?;
                 let payload = json!({
                     "policy": policy,
                     "proposal_hash": proposal.hash(),
-                    "principal": runtime_to_json(&principal)?,
+                    "principal": principal_json,
                 });
                 let reservation = self
                     .snapshot
@@ -916,6 +973,7 @@ impl Machine {
         let RuntimeValue::Permit(permit) = self.slot(permit)?.clone() else {
             return Err(MachineError::TypeMismatch("Permit".to_owned()));
         };
+        self.require_capability(&proposal.capability_request)?;
         self.snapshot
             .authority
             .consume(
@@ -931,6 +989,13 @@ impl Machine {
             .reserve(BudgetDimension::ExternalWrites, 1)
             .map_err(|error| MachineError::Budget(error.to_string()))?;
         let action = proposal.action.clone();
+        let expected_type = self
+            .program
+            .catalog
+            .tools
+            .get(&action)
+            .map(|tool| tool.result_type.clone())
+            .ok_or(MachineError::UnknownTool)?;
         let proposal_hash = proposal.hash().to_owned();
         let payload = json!({
             "action": action,
@@ -946,6 +1011,7 @@ impl Machine {
             completion: PendingCompletion::Write {
                 action,
                 proposal_hash,
+                expected_type,
             },
         });
         Ok(Step::Yield(request))
@@ -1060,10 +1126,13 @@ impl Machine {
             .collect();
         let slots = BTreeMap::new();
         for rule in &policy.rules {
-            let matches = rule.condition.as_ref().is_none_or(|condition| {
-                eval_expression(condition, &locals, &slots, &self.program)
-                    .is_ok_and(|value| value == RuntimeValue::Bool(true))
-            });
+            let matches = match &rule.condition {
+                Some(condition) => {
+                    eval_expression(condition, &locals, &slots, &self.program)?
+                        == RuntimeValue::Bool(true)
+                }
+                None => true,
+            };
             if !matches {
                 continue;
             }
@@ -1108,6 +1177,19 @@ impl Machine {
         Ok(json!({"capability": capability.name, "arguments": arguments}))
     }
 
+    fn require_capability(&self, request: &JsonValue) -> Result<(), MachineError> {
+        if request.is_null() {
+            return Ok(());
+        }
+        let request_hash = canonical_sha256(request)
+            .map_err(|error| MachineError::Serialization(error.to_string()))?;
+        if self.snapshot.grant_request_hashes.contains(&request_hash) {
+            Ok(())
+        } else {
+            Err(MachineError::MissingCapability)
+        }
+    }
+
     fn current_instruction(&self) -> Result<&aster_ir::Instruction, MachineError> {
         let frame = self.frame()?;
         let routine = self
@@ -1150,6 +1232,67 @@ impl Machine {
             .ok_or(MachineError::InvalidIp)?;
         Ok(())
     }
+}
+
+fn validate_declared_capabilities(
+    capabilities: &[CapabilitySpec],
+    locals: &BTreeMap<String, RuntimeValue>,
+    program: &Program,
+    grants: &CompiledGrants,
+) -> Result<(), MachineError> {
+    for capability in capabilities {
+        let arguments = capability
+            .arguments
+            .iter()
+            .map(|argument| {
+                eval_expression(&argument.value, locals, &BTreeMap::new(), program)
+                    .and_then(|value| runtime_to_json(&value))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let request = json!({
+            "capability": capability.name,
+            "arguments": arguments,
+        });
+        if !grants
+            .permits(&request)
+            .map_err(|error| MachineError::Capability(error.to_string()))?
+        {
+            return Err(MachineError::MissingCapability);
+        }
+    }
+    Ok(())
+}
+
+fn initial_state(
+    agent: &Agent,
+    supplied: &BTreeMap<String, JsonValue>,
+    locals: &BTreeMap<String, RuntimeValue>,
+    program: &Program,
+) -> Result<BTreeMap<String, RuntimeValue>, MachineError> {
+    if supplied
+        .keys()
+        .any(|name| !agent.state.iter().any(|field| field.name.as_str() == name))
+    {
+        return Err(MachineError::UnknownStateField);
+    }
+    agent
+        .state
+        .iter()
+        .map(|field| {
+            let value = match supplied.get(&field.name) {
+                Some(value) => decode_json(value, &field.ty, program)?,
+                None => eval_expression(&field.default, locals, &BTreeMap::new(), program)?,
+            };
+            Ok((field.name.clone(), value))
+        })
+        .collect()
+}
+
+fn budget_limits(values: &BTreeMap<String, u64>) -> BTreeMap<BudgetDimension, u64> {
+    values
+        .iter()
+        .filter_map(|(name, value)| budget_dimension(name).map(|dimension| (dimension, *value)))
+        .collect()
 }
 
 fn effect_request(
@@ -1428,41 +1571,103 @@ fn eval_routine(
 }
 
 fn add_seconds(instant: &str, seconds: i64) -> Result<String, MachineError> {
-    let Some(prefix) = instant.strip_suffix('Z') else {
-        return Err(MachineError::InvalidInstant);
-    };
-    let Some((date, time)) = prefix.split_once('T') else {
-        return Err(MachineError::InvalidInstant);
-    };
-    let mut parts = time.split(':');
-    let hour = parts.next().and_then(|value| value.parse::<i64>().ok());
-    let minute = parts.next().and_then(|value| value.parse::<i64>().ok());
-    let second = parts.next().and_then(|value| value.parse::<i64>().ok());
-    if parts.next().is_some() {
-        return Err(MachineError::InvalidInstant);
-    }
-    let (Some(hour), Some(minute), Some(second)) = (hour, minute, second) else {
-        return Err(MachineError::InvalidInstant);
-    };
-    let total = hour
-        .checked_mul(3600)
-        .and_then(|value| {
-            minute
-                .checked_mul(60)
-                .and_then(|minute| value.checked_add(minute))
-        })
-        .and_then(|value| value.checked_add(second))
+    let (year, month, day, hour, minute, second) = instant_parts(instant)?;
+    let total = days_from_civil(year, month, day)
+        .checked_mul(86_400)
+        .and_then(|value| value.checked_add(i64::from(hour) * 3_600))
+        .and_then(|value| value.checked_add(i64::from(minute) * 60))
+        .and_then(|value| value.checked_add(i64::from(second)))
         .and_then(|value| value.checked_add(seconds))
         .ok_or(MachineError::InvalidInstant)?;
-    if !(0..86_400).contains(&total) {
+    let days = total.div_euclid(86_400);
+    let seconds_of_day = total.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    if !(1..=9_999).contains(&year) {
         return Err(MachineError::InvalidInstant);
     }
     Ok(format!(
-        "{date}T{:02}:{:02}:{:02}Z",
-        total / 3600,
-        (total % 3600) / 60,
-        total % 60
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        seconds_of_day / 3_600,
+        (seconds_of_day % 3_600) / 60,
+        seconds_of_day % 60
     ))
+}
+
+fn validate_instant(instant: &str) -> Result<(), MachineError> {
+    instant_parts(instant).map(|_| ())
+}
+
+fn instant_parts(instant: &str) -> Result<(i64, u32, u32, u32, u32, u32), MachineError> {
+    let bytes = instant.as_bytes();
+    if bytes.len() != 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'Z'
+    {
+        return Err(MachineError::InvalidInstant);
+    }
+    let year = parse_decimal(&instant[0..4])?;
+    let month =
+        u32::try_from(parse_decimal(&instant[5..7])?).map_err(|_| MachineError::InvalidInstant)?;
+    let day =
+        u32::try_from(parse_decimal(&instant[8..10])?).map_err(|_| MachineError::InvalidInstant)?;
+    let hour = u32::try_from(parse_decimal(&instant[11..13])?)
+        .map_err(|_| MachineError::InvalidInstant)?;
+    let minute = u32::try_from(parse_decimal(&instant[14..16])?)
+        .map_err(|_| MachineError::InvalidInstant)?;
+    let second = u32::try_from(parse_decimal(&instant[17..19])?)
+        .map_err(|_| MachineError::InvalidInstant)?;
+    let max_day = days_in_month(year, month).ok_or(MachineError::InvalidInstant)?;
+    if year == 0 || day == 0 || day > max_day || hour > 23 || minute > 59 || second > 59 {
+        return Err(MachineError::InvalidInstant);
+    }
+    Ok((year, month, day, hour, minute, second))
+}
+
+fn parse_decimal(value: &str) -> Result<i64, MachineError> {
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        value.parse().map_err(|_| MachineError::InvalidInstant)
+    } else {
+        Err(MachineError::InvalidInstant)
+    }
+}
+
+fn days_in_month(year: i64, month: u32) -> Option<u32> {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => Some(31),
+        4 | 6 | 9 | 11 => Some(30),
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => Some(29),
+        2 => Some(28),
+        _ => None,
+    }
+}
+
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let adjusted_year = year - i64::from(month <= 2);
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = i64::from(month) + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let zero_based = days + 719_468;
+    let era = zero_based.div_euclid(146_097);
+    let day_of_era = zero_based - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    (year, month, day)
 }
 
 fn decode_json(
@@ -1470,6 +1675,9 @@ fn decode_json(
     ty: &TypeSpec,
     program: &Program,
 ) -> Result<RuntimeValue, MachineError> {
+    if let Some(target) = program.catalog.aliases.get(&ty.name) {
+        return decode_json(value, target, program);
+    }
     match (ty.name.as_str(), ty.arguments.as_slice()) {
         ("Incoming", [inner]) => Ok(RuntimeValue::Incoming(Box::new(decode_json(
             value, inner, program,
@@ -1477,6 +1685,37 @@ fn decode_json(
         ("Untrusted", [inner]) => Ok(RuntimeValue::Untrusted(Box::new(decode_json(
             value, inner, program,
         )?))),
+        ("Option", [_]) if value.is_null() => Ok(RuntimeValue::Option(None)),
+        ("Option", [inner]) => Ok(RuntimeValue::Option(Some(Box::new(decode_json(
+            value, inner, program,
+        )?)))),
+        ("List", [inner]) => value
+            .as_array()
+            .ok_or_else(|| MachineError::TypeMismatch("List".to_owned()))?
+            .iter()
+            .map(|element| decode_json(element, inner, program))
+            .collect::<Result<Vec<_>, _>>()
+            .map(RuntimeValue::List),
+        ("Unit", []) if value.is_null() => Ok(RuntimeValue::Unit),
+        ("Bool", []) => value
+            .as_bool()
+            .map(RuntimeValue::Bool)
+            .ok_or_else(|| MachineError::TypeMismatch("Bool".to_owned())),
+        ("Int" | "Duration", []) => value
+            .as_i64()
+            .map(RuntimeValue::Int)
+            .ok_or_else(|| MachineError::TypeMismatch(ty.name.clone())),
+        ("Text" | "Error", []) => value
+            .as_str()
+            .map(|value| RuntimeValue::Text(value.to_owned()))
+            .ok_or_else(|| MachineError::TypeMismatch(ty.name.clone())),
+        ("Instant", []) => {
+            let instant = value
+                .as_str()
+                .ok_or_else(|| MachineError::TypeMismatch("Instant".to_owned()))?;
+            validate_instant(instant)?;
+            Ok(RuntimeValue::Text(instant.to_owned()))
+        }
         (name, []) if program.catalog.records.contains_key(name) => {
             let object = value
                 .as_object()
@@ -1486,6 +1725,14 @@ fn decode_json(
                 .records
                 .get(name)
                 .ok_or(MachineError::UnknownValue)?;
+            if object
+                .keys()
+                .any(|key| !fields.iter().any(|field| field.name.as_str() == key))
+            {
+                return Err(MachineError::TypeMismatch(format!(
+                    "unknown field in {name}"
+                )));
+            }
             fields
                 .iter()
                 .map(|field| {
@@ -1497,7 +1744,7 @@ fn decode_json(
                 .collect::<Result<BTreeMap<_, _>, _>>()
                 .map(RuntimeValue::Record)
         }
-        _ => json_to_runtime(value),
+        _ => Err(MachineError::TypeMismatch(ty.name.clone())),
     }
 }
 
@@ -1649,6 +1896,8 @@ pub enum MachineError {
     MissingHandlerParameter,
     #[error("missing input `{0}`")]
     MissingInput(String),
+    #[error("initial state contains an unknown field")]
+    UnknownStateField,
     #[error("type mismatch: {0}")]
     TypeMismatch(String),
     #[error("unknown runtime value")]
@@ -1679,6 +1928,8 @@ pub enum MachineError {
     UsageAlreadyReserved,
     #[error("unknown tool")]
     UnknownTool,
+    #[error("unknown prompt")]
+    UnknownPrompt,
     #[error("unknown validator")]
     UnknownValidator,
     #[error("unknown policy")]
@@ -1707,6 +1958,10 @@ pub enum MachineError {
     Budget(String),
     #[error("authority failure: {0}")]
     Authority(String),
+    #[error("required capability grant is missing or out of scope")]
+    MissingCapability,
+    #[error("capability failure: {0}")]
+    Capability(String),
     #[error("serialization failure: {0}")]
     Serialization(String),
 }
