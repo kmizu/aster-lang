@@ -82,6 +82,31 @@ impl Trace {
         ))
     }
 
+    /// Verifies and truncates this trace to the prefix bound into a snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid full chain or a position/head mismatch.
+    pub fn rewind_to(&mut self, position: u64, hash: &str) -> Result<(), TraceError> {
+        self.verify()?;
+        let position = usize::try_from(position).map_err(|_| TraceError::CheckpointMismatch)?;
+        if position > self.entries.len() {
+            return Err(TraceError::CheckpointMismatch);
+        }
+        let expected = if position == 0 {
+            String::new()
+        } else {
+            self.entries
+                .get(position - 1)
+                .map_or_else(String::new, |entry| entry.entry_hash.clone())
+        };
+        if expected != hash {
+            return Err(TraceError::CheckpointMismatch);
+        }
+        self.entries.truncate(position);
+        Ok(())
+    }
+
     /// Verifies schema, sequence, run identity, linkage, and every entry hash.
     ///
     /// # Errors
@@ -175,6 +200,9 @@ pub enum TraceError {
     /// A trace must contain at least its run header.
     #[error("trace is empty")]
     Empty,
+    /// Snapshot trace prefix does not match this chain.
+    #[error("snapshot trace checkpoint mismatch")]
+    CheckpointMismatch,
 }
 
 impl PartialEq for TraceError {
@@ -182,7 +210,8 @@ impl PartialEq for TraceError {
         match (self, other) {
             (Self::Canonical(_), Self::Canonical(_))
             | (Self::TooLong, Self::TooLong)
-            | (Self::Empty, Self::Empty) => true,
+            | (Self::Empty, Self::Empty)
+            | (Self::CheckpointMismatch, Self::CheckpointMismatch) => true,
             (
                 Self::MetadataMismatch { sequence: left },
                 Self::MetadataMismatch { sequence: right },

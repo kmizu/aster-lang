@@ -1,6 +1,6 @@
 use std::{fs, path::PathBuf};
 
-use aster_ir::{InstructionKind, Program, Stage, lower};
+use aster_ir::{InstructionKind, Program, ProgramError, Stage, lower};
 use aster_semantics::check_source;
 use aster_syntax::SourceFile;
 
@@ -24,6 +24,13 @@ fn lowering_has_stable_ids_hash_and_json_round_trip() {
     let json = first.to_json().expect("IR serializes");
     let decoded = Program::from_json(&json).expect("IR deserializes and validates");
     assert_eq!(decoded, first);
+    let mut unknown_nested: serde_json::Value =
+        serde_json::from_str(&json).expect("IR JSON is inspectable");
+    unknown_nested["catalog"]["prompts"]["ParseMeeting"]["unexpected"] = serde_json::json!(true);
+    assert!(matches!(
+        Program::from_json(&serde_json::to_string(&unknown_nested).expect("mutated IR serializes")),
+        Err(ProgramError::SchemaShapeMismatch)
+    ));
 
     let handler = first
         .handler("Scheduler", "message")

@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
-use crate::{Intent, Permit, Proposal};
+use crate::{CanonicalError, Intent, Permit, Proposal};
 
 /// Typed successful write response retained for reconciliation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ReceiptValue {
     /// Committed action identity.
     pub action: String,
@@ -16,9 +17,24 @@ pub struct ReceiptValue {
     pub value: Box<RuntimeValue>,
 }
 
+/// A typed value paired with a stable, non-secret boundary identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvenancedValue {
+    /// Hidden or wrapper-visible typed payload.
+    pub value: Box<RuntimeValue>,
+    /// Stable reference derived from the event or effect request.
+    pub provenance: String,
+}
+
 /// Serializable runtime values plus an opaque non-serializable secret handle.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
 pub enum RuntimeValue {
     Unit,
     Bool(bool),
@@ -26,13 +42,17 @@ pub enum RuntimeValue {
     Text(String),
     List(Vec<Self>),
     Record(BTreeMap<String, Self>),
+    Enum {
+        variant: String,
+        payload: Option<Box<Self>>,
+    },
     Option(Option<Box<Self>>),
     Result(Result<Box<Self>, String>),
-    Incoming(Box<Self>),
-    Untrusted(Box<Self>),
-    Candidate(Box<Self>),
-    Checked(Box<Self>),
-    Observation(Box<Self>),
+    Incoming(ProvenancedValue),
+    Untrusted(ProvenancedValue),
+    Candidate(ProvenancedValue),
+    Checked(ProvenancedValue),
+    Observation(ProvenancedValue),
     Intent(Intent),
     Proposal(Proposal),
     Permit(Permit),
@@ -53,23 +73,60 @@ impl RuntimeValue {
             Self::Secret(_) => true,
             Self::List(values) => values.iter().any(Self::contains_secret),
             Self::Record(values) => values.values().any(Self::contains_secret),
-            Self::Option(Some(value))
+            Self::Enum {
+                payload: Some(value),
+                ..
+            }
+            | Self::Option(Some(value))
             | Self::Result(Ok(value))
-            | Self::Incoming(value)
-            | Self::Untrusted(value)
-            | Self::Candidate(value)
-            | Self::Checked(value)
-            | Self::Observation(value) => value.contains_secret(),
+            | Self::Incoming(ProvenancedValue { value, .. })
+            | Self::Untrusted(ProvenancedValue { value, .. })
+            | Self::Candidate(ProvenancedValue { value, .. })
+            | Self::Checked(ProvenancedValue { value, .. })
+            | Self::Observation(ProvenancedValue { value, .. }) => value.contains_secret(),
             Self::Receipt(receipt) | Self::Reconciled(receipt) => receipt.value.contains_secret(),
             Self::Unit
             | Self::Bool(_)
             | Self::Int(_)
             | Self::Text(_)
+            | Self::Enum { payload: None, .. }
             | Self::Option(None)
             | Self::Result(Err(_))
             | Self::Intent(_)
             | Self::Proposal(_)
             | Self::Permit(_) => false,
+        }
+    }
+
+    pub(crate) fn validate_governance(&self) -> Result<(), CanonicalError> {
+        match self {
+            Self::Proposal(proposal) => proposal.validate(),
+            Self::List(values) => values.iter().try_for_each(Self::validate_governance),
+            Self::Record(values) => values.values().try_for_each(Self::validate_governance),
+            Self::Enum {
+                payload: Some(value),
+                ..
+            }
+            | Self::Option(Some(value))
+            | Self::Result(Ok(value))
+            | Self::Incoming(ProvenancedValue { value, .. })
+            | Self::Untrusted(ProvenancedValue { value, .. })
+            | Self::Candidate(ProvenancedValue { value, .. })
+            | Self::Checked(ProvenancedValue { value, .. })
+            | Self::Observation(ProvenancedValue { value, .. }) => value.validate_governance(),
+            Self::Receipt(receipt) | Self::Reconciled(receipt) => {
+                receipt.value.validate_governance()
+            }
+            Self::Unit
+            | Self::Bool(_)
+            | Self::Int(_)
+            | Self::Text(_)
+            | Self::Enum { payload: None, .. }
+            | Self::Option(None)
+            | Self::Result(Err(_))
+            | Self::Intent(_)
+            | Self::Permit(_)
+            | Self::Secret(_) => Ok(()),
         }
     }
 }

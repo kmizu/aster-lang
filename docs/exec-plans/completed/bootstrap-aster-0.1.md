@@ -13,11 +13,11 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - [x] M3: Names, types, wrappers, purity/effects, capabilities, affine analysis,
       recursion rejection, persistence checks, and conformance fixtures.
 - [x] M4: Typed serializable IR and the meeting scheduler lowering path.
-- [ ] M5: Deterministic VM, fixtures, budgets, capabilities, proposals, permits,
+- [x] M5: Deterministic VM, fixtures, budgets, capabilities, proposals, permits,
       commit, reconciliation, atomic state, trace, and snapshots.
-- [ ] M6: Replay and resume with tamper/divergence validation and zero drivers.
-- [ ] M7: CLI, example artifacts, black-box tests, CI, and complete docs.
-- [ ] M8: Requirement-by-requirement audit and all final validation commands.
+- [x] M6: Replay and resume with tamper/divergence validation and zero drivers.
+- [x] M7: CLI, example artifacts, black-box tests, CI, and complete docs.
+- [x] M8: Requirement-by-requirement audit and all final validation commands.
 
 ## Decisions and rationale
 
@@ -115,6 +115,19 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   persists that trace and prior snapshots. Regression coverage includes
   actual-usage overflow after exactly one driver call and expired authority
   before any write call.
+- 2026-08-05: Closed the remaining runtime audit gaps: user enums now decode and
+  match generally; `if` and `match` lower values through explicit merge slots;
+  validator failures retain all ordered requirement spans and stable
+  provenance; committed receipts block completion until reconciliation.
+- 2026-08-05: Hardened deserialized authority and persistence state. Proposals
+  bind sensitivity, permits retain issue/expiry and decision evidence, the
+  issuance ledger rejects forged permits, IR/snapshot nested schema drift is
+  rejected, and snapshot trace prefixes are verified before resume.
+- 2026-08-05: Expanded every budget trace transition to carry
+  before/reserved/actual/released/after evidence and made replay recompute it.
+  The public resume path was exercised through all five meeting effects to the
+  same final state, and its resulting trace replayed successfully without a
+  driver.
 
 ## Discoveries and deviations
 
@@ -150,13 +163,29 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - `cargo test -p aster-ir --test lowering`: 3 tests passed for stable identity
   and JSON round-trip, explicit meeting governance order, and control-flow
   branch targets.
-- `cargo test -p aster-runtime --test governance`: 5 tests passed for proposal
+- `cargo test -p aster-runtime --test governance`: 7 tests passed for proposal
   binding, affine permit consumption, budgets, trace tamper detection, and
   secret-safe snapshot rejection.
-- `cargo test -p aster-runtime --tests`: 10 tests passed, including pending
+- `cargo test -p aster-runtime --tests`: 28 tests passed, including pending
   snapshot restore, direct-allow zero-approval execution, full meeting approval
   execution, fixture-backed recording, driver-free replay, and fingerprint
   mismatch rejection.
+- `cargo test --workspace --all-features`: passed after the requirement audit,
+  including 3 CLI black-box tests, 21 mandatory compile-fail fixtures, runtime
+  governance/replay tests, and formatter/parser/IR tests.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  passed after the final authority, provenance, budget-evidence, and resume
+  changes.
+- `./scripts/check.sh`: passed after moving this plan out of `active/`; format,
+  clippy, all workspace tests, architecture, documentation, and production Rust
+  checks were green.
+- The README `aster check`, `aster run`, and `aster replay` commands all
+  succeeded; `cmp` confirmed byte-identical record/replay state containing
+  `event-001`.
+- The representative compile-fail command returned exit 1 with valid JSON only
+  on stdout and `ASTER-TYPE-2001` first. The generated trace had 34 valid JSONL
+  entries, five snapshots were written, generated artifacts were mode `0600`,
+  and neither secret sentinel occurred under `.aster/`.
 
 ## Known limitations
 

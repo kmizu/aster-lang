@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use aster_diagnostics::Span;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -45,7 +46,14 @@ impl Program {
     ///
     /// Rejects malformed JSON, unsupported schemas, and hash mismatches.
     pub fn from_json(json: &str) -> Result<Self, ProgramError> {
-        let program: Self = serde_json::from_str(json).map_err(ProgramError::Serialization)?;
+        let input: serde_json::Value =
+            serde_json::from_str(json).map_err(ProgramError::Serialization)?;
+        let program: Self =
+            serde_json::from_value(input.clone()).map_err(ProgramError::Serialization)?;
+        let normalized = serde_json::to_value(&program).map_err(ProgramError::Serialization)?;
+        if input != normalized {
+            return Err(ProgramError::SchemaShapeMismatch);
+        }
         program.validate()?;
         Ok(program)
     }
@@ -103,6 +111,9 @@ pub enum ProgramError {
     /// Persisted semantic content differs from its claimed identity.
     #[error("IR program hash mismatch")]
     HashMismatch,
+    /// Persisted IR contains fields outside the exact versioned schema.
+    #[error("IR schema shape mismatch")]
+    SchemaShapeMismatch,
 }
 
 /// One serializable routine with explicit control flow.
@@ -142,6 +153,8 @@ pub struct Catalog {
     pub capabilities: BTreeMap<String, Vec<FieldSpec>>,
     /// Record schemas.
     pub records: BTreeMap<String, Vec<FieldSpec>>,
+    /// Enum variant payload schemas keyed by enum then variant.
+    pub enums: BTreeMap<String, BTreeMap<String, Option<TypeSpec>>>,
     /// Static prompts.
     pub prompts: BTreeMap<String, PromptSpec>,
     /// Tool boundaries.
@@ -154,6 +167,7 @@ pub struct Catalog {
 
 /// A structural type carried by IR signatures and schemas.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TypeSpec {
     /// Constructor or declared type name.
     pub name: String,
@@ -238,7 +252,16 @@ pub struct ValidatorSpec {
     /// Typed validator inputs.
     pub parameters: Vec<FieldSpec>,
     /// Conjunctive pure requirements.
-    pub requirements: Vec<PureExpression>,
+    pub requirements: Vec<ValidatorRequirementSpec>,
+}
+
+/// One pure validator predicate with its stable source location.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ValidatorRequirementSpec {
+    /// Pure predicate.
+    pub expression: PureExpression,
+    /// Source span reported without rendering values.
+    pub span: Span,
 }
 
 /// Ordered total authorization policy.
@@ -318,6 +341,8 @@ pub enum InstructionKind {
     },
     /// Bind an immutable source local to a slot.
     Bind { name: String, value: ValueId },
+    /// Copy one branch result into a shared merge slot.
+    Copy { target: ValueId, source: ValueId },
     /// Call a statically resolved source routine.
     Call {
         target: ValueId,

@@ -14,8 +14,9 @@ driver.
 
 ## Status and scope
 
-ASTER 0.1 is under active bootstrap and is not production-ready. The 0.1 scope
-is one-file programs, non-generic user types, finite pure computation, explicit
+ASTER 0.1 is an implemented experimental vertical slice and is not
+production-ready. The 0.1 scope is one-file programs, non-generic user types,
+finite pure computation, explicit
 model/read/approval/write effects, fixture-backed drivers, transactional state,
 hash-chained traces, snapshots, resume, and semantic replay.
 
@@ -40,7 +41,7 @@ aster-diagnostics <- aster-syntax <- aster-semantics <- aster-ir <- aster-runtim
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), the
 [normative specification](docs/spec/aster-0.1.md), and the
-[active bootstrap plan](docs/exec-plans/active/bootstrap-aster-0.1.md).
+[completed bootstrap plan](docs/exec-plans/completed/bootstrap-aster-0.1.md).
 
 ## Meeting scheduler workflow
 
@@ -75,9 +76,12 @@ cargo run -p aster-cli --bin aster -- replay examples/meeting-scheduler/main.ast
 cmp .aster/record.output-state.json .aster/replay.output-state.json
 ```
 
-The command contract is part of the target 0.1 vertical slice tracked by the
-active execution plan; it is not claimed complete until that plan moves to
-`docs/exec-plans/completed/` and `./scripts/check.sh` passes.
+The source stages are deliberately visible: `infer` yields an opaque candidate,
+`validate` yields checked data, `observe` performs read-only effects, and a
+write crosses `intent -> propose -> authorize -> commit` before a final
+observation is reconciled. State changes publish only after the handler returns
+successfully. The completed execution plan records the implementation evidence
+behind this command contract.
 
 ## Trace data warning
 

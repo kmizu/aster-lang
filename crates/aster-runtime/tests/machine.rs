@@ -212,6 +212,15 @@ fn machine_yields_resumes_and_round_trips_pending_snapshot() {
         .expect("snapshot is safe")
         .to_json()
         .expect("snapshot serializes");
+    let mut unknown_nested: JsonValue =
+        serde_json::from_str(&json).expect("snapshot JSON is inspectable");
+    unknown_nested["frames"][0]["unexpected"] = json!(true);
+    assert!(matches!(
+        MachineSnapshot::from_json(
+            &serde_json::to_string(&unknown_nested).expect("mutated snapshot serializes")
+        ),
+        Err(MachineError::Serialization(_))
+    ));
     let snapshot = MachineSnapshot::from_json(&json).expect("snapshot validates");
     let mut resumed = Machine::restore(program, snapshot).expect("snapshot restores");
     assert_eq!(resumed.step(), Step::Yield(effect.clone()));
@@ -406,4 +415,219 @@ agent A() requires [] {
     .expect("snapshot is JSON");
     assert_eq!(snapshot["current_state"]["count"]["value"], json!(0));
     assert_eq!(snapshot["pending_state"]["count"]["value"], json!(1));
+}
+
+#[test]
+fn user_enum_decodes_constructs_and_matches_in_the_vm() {
+    let source = SourceFile::new(
+        "enum.aster",
+        r#"module choices.example;
+enum Choice { First, Other(Text), }
+capability ModelUse(alias: Text);
+prompt Parse(message: Untrusted<Text>) -> Choice {
+  instruction """Choose one declared variant.""";
+  data { message, };
+}
+validator Valid(x: Choice) { require true; }
+agent A() requires [ModelUse("planner")] {
+  state { choice: Choice = First; }
+  budget per_event { model_calls <= 1; }
+  on message(msg: Incoming<Untrusted<Text>>) -> Result<Unit, Error> {
+    let candidate = (infer Parse(message = msg.value) using @planner)?;
+    let checked = (validate candidate with Valid)?;
+    let selected = match checked.value {
+      First => 0,
+      Other(value) => 1,
+    };
+    let conditional = if true { selected; } else { 0; };
+    require (conditional == 1);
+    return Ok(Unit);
+  }
+}
+"#,
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "A".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::new(),
+            payload: json!("go"),
+            state: BTreeMap::new(),
+            capabilities: grants(&[("ModelUse", json!("planner"))]),
+        },
+    )
+    .expect("enum state decodes");
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(request) => machine
+                .supply(&EffectResolution {
+                    request_hash: request.request_hash,
+                    payload: json!({"variant": "Other", "value": "selected"}),
+                    actual_usage: BTreeMap::new(),
+                })
+                .expect("enum response decodes"),
+            Step::Completed(_) => break,
+            Step::Failed(error) => panic!("enum handler must complete, got {error:?}"),
+        }
+    }
+}
+
+#[test]
+fn validator_failure_reports_every_requirement_and_candidate_provenance() {
+    let source = SourceFile::new(
+        "validator-evidence.aster",
+        r#"module evidence.validation;
+type Answer = { value: Int, };
+capability ModelUse(alias: Text);
+prompt Parse(message: Untrusted<Text>) -> Answer {
+  instruction """Extract one integer.""";
+  data { message, };
+}
+validator Rules(x: Answer) {
+  require (x.value >= 10);
+  require (x.value >= 30);
+}
+agent A() requires [ModelUse("planner")] {
+  state {}
+  budget per_event { model_calls <= 1; }
+  on message(msg: Incoming<Untrusted<Text>>) -> Result<Unit, Error> {
+    let candidate = (infer Parse(message = msg.value) using @planner)?;
+    let checked = (validate candidate with Rules)?;
+    return Ok(Unit);
+  }
+}
+"#,
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "A".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::new(),
+            payload: json!("go"),
+            state: BTreeMap::new(),
+            capabilities: grants(&[("ModelUse", json!("planner"))]),
+        },
+    )
+    .expect("machine starts");
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(request) => machine
+                .supply(&EffectResolution {
+                    request_hash: request.request_hash,
+                    payload: json!({"value": 5}),
+                    actual_usage: BTreeMap::new(),
+                })
+                .expect("model response decodes"),
+            Step::Failed(MachineError::PropagatedError(message)) => {
+                let positions: Vec<_> = message
+                    .match_indices("validator-evidence.aster:")
+                    .map(|(position, _)| position)
+                    .collect();
+                assert_eq!(positions.len(), 2, "both requirement spans: {message}");
+                let first = positions[0];
+                let second = positions[1];
+                assert!(first < second, "requirements remain in source order");
+                assert!(message.contains("provenance"));
+                break;
+            }
+            other => panic!("expected validation failure, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn committed_receipt_cannot_be_discarded_without_reconciliation() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("tests/conformance/pass/direct_allow.aster");
+    let text = std::fs::read_to_string(path)
+        .expect("fixture is readable")
+        .replace(
+            "    let actual = (observe Store.get(owner = owner, id = receipt.value.id))?;\n    let confirmed = (reconcile receipt against actual with Matches)?;\n",
+            "",
+        );
+    let source = SourceFile::new("unreconciled.aster", text);
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "Writer".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
+            payload: json!("save"),
+            state: BTreeMap::new(),
+            capabilities: grants(&[("Read", json!("user-001")), ("Write", json!("user-001"))]),
+        },
+    )
+    .expect("machine starts");
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(request) => {
+                assert_eq!(request.kind, EffectKind::Write);
+                machine
+                    .supply(&EffectResolution {
+                        request_hash: request.request_hash,
+                        payload: json!({"id": "created-001"}),
+                        actual_usage: BTreeMap::new(),
+                    })
+                    .expect("write response decodes");
+            }
+            Step::Failed(MachineError::UnreconciledReceipt) => break,
+            other => panic!("expected unreconciled receipt failure, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn add_seconds_normalizes_across_a_utc_day_boundary() {
+    let source = SourceFile::new(
+        "instant.aster",
+        r"module instant.boundary;
+agent A(start: Instant) requires [] {
+  state { next: Instant = start; }
+  budget per_event {}
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    update state { next = add_seconds(event.time, 120); }
+    return Ok(Unit);
+  }
+}
+",
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "A".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T23:59:30Z".to_owned(),
+            agent_arguments: BTreeMap::from([("start".to_owned(), json!("2026-01-01T00:00:00Z"))]),
+            payload: json!("go"),
+            state: BTreeMap::new(),
+            capabilities: grants(&[]),
+        },
+    )
+    .expect("machine starts");
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Completed(outcome) => {
+                assert_eq!(outcome.state["next"], json!("2026-08-06T00:01:30Z"));
+                break;
+            }
+            other => panic!("expected completion, got {other:?}"),
+        }
+    }
 }

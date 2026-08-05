@@ -12,7 +12,7 @@ use aster_diagnostics::{Diagnostic, DiagnosticCode, explain};
 use aster_ir::{Program, lower};
 use aster_runtime::{
     CapabilityGrants, EffectResolution, FixtureDriver, FixtureSet, Machine, MachineSnapshot,
-    StartRequest, Step, Trace, record_run_evidenced, replay_run,
+    StartRequest, Step, Trace, budget_settlement_evidence, record_run_evidenced, replay_run,
 };
 use aster_semantics::check_source;
 use aster_syntax::{SourceFile, format_source, parse};
@@ -139,6 +139,10 @@ struct OutputState<'a> {
 pub fn main_entry() -> ExitCode {
     match execute(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(CliError::SourceJson(output)) => {
+            println!("{output}");
+            ExitCode::from(1)
+        }
         Err(error) => {
             eprintln!("{error}");
             ExitCode::from(error.exit_code())
@@ -319,20 +323,52 @@ fn resume_command(
     let snapshot = MachineSnapshot::from_json(&read_utf8(snapshot)?)?;
     let resolution: EffectResolution = read_json(resolution)?;
     let mut trace = Trace::from_json_lines(&read_utf8(trace_path)?).map_err(CliError::replay)?;
+    trace
+        .rewind_to(snapshot.trace_position, &snapshot.trace_hash)
+        .map_err(CliError::replay)?;
     let mut machine = Machine::restore(program, snapshot)?;
-    machine.supply(&resolution)?;
+    let reservation = machine.pending_budget_evidence()?;
+    let maximums: BTreeMap<String, u64> = serde_json::from_value(
+        reservation
+            .get("variable_maximums")
+            .cloned()
+            .ok_or_else(|| CliError::internal("pending budget evidence is incomplete"))?,
+    )?;
     trace.append("effect_resolved", serde_json::to_value(&resolution)?)?;
+    machine.supply(&resolution)?;
+    append_machine_audit(&mut trace, &mut machine)?;
+    trace.append(
+        "budget_settled",
+        budget_settlement_evidence(
+            &maximums,
+            &resolution.actual_usage,
+            &machine.budget_evidence()?,
+        )
+        .map_err(CliError::runtime)?,
+    )?;
     loop {
-        match machine.step() {
+        let step = machine.step();
+        append_machine_audit(&mut trace, &mut machine)?;
+        match step {
             Step::Continue => {}
             Step::Yield(request) => {
                 fs::create_dir_all(snapshot_dir)?;
+                trace.append("effect_requested", serde_json::to_value(request)?)?;
+                trace.append("budget_reserved", machine.pending_budget_evidence()?)?;
+                let (position, hash) = trace.checkpoint()?;
+                machine.set_trace_checkpoint(position, hash);
                 let next = machine.snapshot()?;
                 atomic_write(
                     &snapshot_dir.join("resume-next.json"),
                     next.to_json()?.as_bytes(),
                 )?;
-                trace.append("effect_requested", serde_json::to_value(request)?)?;
+                trace.append(
+                    "snapshot_written",
+                    serde_json::json!({
+                        "snapshot_hash": aster_runtime::canonical_sha256(&next)
+                            .map_err(CliError::runtime)?,
+                    }),
+                )?;
                 atomic_write(trace_path, trace.to_json_lines()?.as_bytes())?;
                 return Ok(());
             }
@@ -345,6 +381,13 @@ fn resume_command(
             Step::Failed(error) => return Err(CliError::runtime(error)),
         }
     }
+}
+
+fn append_machine_audit(trace: &mut Trace, machine: &mut Machine) -> Result<(), CliError> {
+    for event in machine.take_audit_events() {
+        trace.append(event.kind, event.payload)?;
+    }
+    Ok(())
 }
 
 fn start_request(
@@ -415,17 +458,22 @@ fn source_error_with_format(
     source: &SourceFile,
     format: DiagnosticFormat,
 ) -> CliError {
-    let rendered = match format {
-        DiagnosticFormat::Human => values
-            .iter()
-            .map(|value| value.render_human(source.text()))
-            .collect::<String>(),
-        DiagnosticFormat::Json => match serde_json::to_string(values) {
+    match format {
+        DiagnosticFormat::Human => CliError::Source(
+            values
+                .iter()
+                .map(|value| value.render_human(source.text()))
+                .collect::<String>(),
+        ),
+        DiagnosticFormat::Json => CliError::SourceJson(match serde_json::to_string(values) {
             Ok(value) => value,
-            Err(error) => format!("{{\"code\":\"ASTER-INTERNAL-9901\",\"message\":{error:?}}}"),
-        },
-    };
-    CliError::Source(rendered)
+            Err(error) => serde_json::json!({
+                "code": "ASTER-INTERNAL-9901",
+                "message": error.to_string(),
+            })
+            .to_string(),
+        }),
+    }
 }
 
 fn validate_schema(version: u32, identity: &str) -> Result<(), CliError> {
@@ -482,6 +530,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
 enum CliError {
     #[error("{0}")]
     Source(String),
+    #[error("{0}")]
+    SourceJson(String),
     #[error("ASTER-RUNTIME-9001: runtime failure: {0}")]
     Runtime(String),
     #[error("ASTER-REPLAY-10001: replay failure: {0}")]
@@ -509,7 +559,7 @@ impl CliError {
 
     const fn exit_code(&self) -> u8 {
         match self {
-            Self::Source(_) => 1,
+            Self::Source(_) | Self::SourceJson(_) => 1,
             Self::Runtime(_) | Self::Io(_) | Self::Json(_) => 2,
             Self::Replay(_) => 3,
             Self::Internal(_) => 4,

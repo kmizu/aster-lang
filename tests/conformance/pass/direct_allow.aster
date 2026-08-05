@@ -1,8 +1,11 @@
 module pass.direct_allow;
 
-type Item = { id: Text, };
+type Item = {
+  id: Text,
+};
 
 capability Read(owner: Text);
+
 capability Write(owner: Text);
 
 tool Store.put(owner: Text, request_id: Text) -> Item {
@@ -28,9 +31,19 @@ policy Direct(p: Proposal<Store.put>) {
   deny "denied" otherwise;
 }
 
-agent Writer(owner: Text) requires [Read(owner), Write(owner)] {
-  state {}
-  budget per_event { external_reads <= 1; external_writes <= 1; }
+agent Writer(owner: Text)
+requires [
+  Read(owner),
+  Write(owner),
+] {
+  state {
+  }
+
+  budget per_event {
+    external_reads <= 1;
+    external_writes <= 1;
+  }
+
   on message(msg: Incoming<Text>) -> Result<Unit, Error> {
     let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
     let proposal = propose Store.put(owner = owner, request_id = event.id) for purpose;

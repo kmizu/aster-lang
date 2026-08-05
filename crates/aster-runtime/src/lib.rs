@@ -12,7 +12,7 @@ mod run;
 mod trace;
 mod value;
 
-pub use authority::{AuthorityError, AuthorityLedger, Intent, Permit, Proposal};
+pub use authority::{AuthorityError, AuthorityLedger, Intent, Permit, Proposal, ProposalMetadata};
 pub use budget::{Budget, BudgetDimension, BudgetError, Reservation};
 pub use canonical::{CanonicalError, canonical_json, canonical_sha256};
 pub use capability::{CapabilityError, CapabilityGrant, CapabilityGrants};
@@ -24,8 +24,8 @@ pub use machine::{
     MachineSnapshot, RunOutcome, StartRequest, Step,
 };
 pub use run::{
-    RecordFailure, RecordResult, ReplayError, RunError, record_run, record_run_evidenced,
-    replay_run,
+    RecordFailure, RecordResult, ReplayError, RunError, budget_settlement_evidence, record_run,
+    record_run_evidenced, replay_run,
 };
 pub use trace::{Trace, TraceEntry, TraceError};
-pub use value::{ReceiptValue, RuntimeValue, SnapshotError, snapshot_values};
+pub use value::{ProvenancedValue, ReceiptValue, RuntimeValue, SnapshotError, snapshot_values};

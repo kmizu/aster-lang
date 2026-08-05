@@ -20,12 +20,15 @@ typed request.
   prompt instructions are static syntax.
 - Tool confusion is prevented by read/write invocation typing and exact action
   identities.
-- Permit substitution and double use are prevented by canonical proposal hashes,
-  affine static checks, and a runtime consumption ledger.
+- Permit substitution, deserialized forgery, and double use are prevented by
+  canonical proposal hashes, self-validating permit identities, an issuance
+  ledger, affine static checks, and a runtime consumption ledger.
 - Excessive effects are rejected by capability and pre-driver budget checks.
 - Replay substitution is rejected by hash-chain, fingerprint, request-order,
   and semantic recomputation checks.
 - Partial state publication is prevented by pending transactional updates.
+- Unverified write success cannot be discarded: committed receipt hashes remain
+  in the snapshot until successful reconciliation, and block normal completion.
 - Secret exfiltration is prevented by opaque representation and rejection at
   every prompt, render, serialization, state, trace, and snapshot boundary.
 - Nondeterministic audit output is prevented by canonical serialization,

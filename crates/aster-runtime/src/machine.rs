@@ -10,12 +10,13 @@ use thiserror::Error;
 
 use crate::capability::CompiledGrants;
 use crate::{
-    AuthorityLedger, Budget, BudgetDimension, CapabilityGrants, Intent, Proposal, ReceiptValue,
-    Reservation, RuntimeValue, canonical_sha256, snapshot_values,
+    AuthorityLedger, Budget, BudgetDimension, CapabilityGrants, Intent, Proposal, ProposalMetadata,
+    ProvenancedValue, ReceiptValue, Reservation, RuntimeValue, canonical_sha256, snapshot_values,
 };
 
 /// Validated inputs needed to start one agent event.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct StartRequest {
     pub agent: String,
     pub event: String,
@@ -39,6 +40,7 @@ pub enum EffectKind {
 
 /// Complete deterministic external request identity.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EffectRequest {
     pub kind: EffectKind,
     pub identity: String,
@@ -57,6 +59,7 @@ pub struct EffectResolution {
 
 /// One routine frame; serializable without host closures.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FrameSnapshot {
     routine: String,
     instruction_pointer: u32,
@@ -67,16 +70,18 @@ pub struct FrameSnapshot {
 
 /// Pending effect and the slot that receives its typed resolution.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct PendingEffect {
     request: EffectRequest,
     target: ValueId,
+    budget_before: Budget,
     reservation: Option<Reservation>,
     usage_reservations: BTreeMap<String, Reservation>,
     completion: PendingCompletion,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum PendingCompletion {
     Model {
         expected_type: TypeSpec,
@@ -115,6 +120,7 @@ pub struct MachineSnapshot {
     pub grant_fingerprint: String,
     grant_request_hashes: BTreeSet<String>,
     pub authority: AuthorityLedger,
+    outstanding_receipts: BTreeSet<String>,
     pub trace_position: u64,
     pub trace_hash: String,
     pending_effect: Option<PendingEffect>,
@@ -143,6 +149,9 @@ impl MachineSnapshot {
         if snapshot.schema_version != 1 {
             return Err(MachineError::SnapshotSchemaMismatch);
         }
+        if snapshot.runtime_version != env!("CARGO_PKG_VERSION") {
+            return Err(MachineError::RuntimeVersionMismatch);
+        }
         snapshot.validate_no_secrets()?;
         if snapshot.compute_hash()? != snapshot.snapshot_hash {
             return Err(MachineError::SnapshotHashMismatch);
@@ -163,18 +172,48 @@ impl MachineSnapshot {
     }
 
     fn validate_no_secrets(&self) -> Result<(), MachineError> {
+        self.authority
+            .validate()
+            .map_err(|error| MachineError::Authority(error.to_string()))?;
+        if let Some(PendingEffect {
+            completion: PendingCompletion::Approval { proposal, .. },
+            ..
+        }) = &self.pending_effect
+        {
+            proposal
+                .validate()
+                .map_err(|error| MachineError::Authority(error.to_string()))?;
+        }
         snapshot_values(&self.current_state)
             .map_err(|_| MachineError::SecretPersistenceRejected)?;
+        self.current_state
+            .values()
+            .try_for_each(RuntimeValue::validate_governance)
+            .map_err(|error| MachineError::Authority(error.to_string()))?;
         snapshot_values(&self.pending_state)
             .map_err(|_| MachineError::SecretPersistenceRejected)?;
+        self.pending_state
+            .values()
+            .try_for_each(RuntimeValue::validate_governance)
+            .map_err(|error| MachineError::Authority(error.to_string()))?;
         for frame in &self.frames {
             snapshot_values(&frame.locals).map_err(|_| MachineError::SecretPersistenceRejected)?;
+            frame
+                .locals
+                .values()
+                .try_for_each(RuntimeValue::validate_governance)
+                .map_err(|error| MachineError::Authority(error.to_string()))?;
             let slots: BTreeMap<_, _> = frame
                 .slots
                 .iter()
                 .map(|(id, value)| (id.0.to_string(), value.clone()))
                 .collect();
             snapshot_values(&slots).map_err(|_| MachineError::SecretPersistenceRejected)?;
+            frame
+                .slots
+                .values()
+                .try_for_each(RuntimeValue::validate_governance)
+                .map_err(|error| MachineError::Authority(error.to_string()))?;
         }
         Ok(())
     }
@@ -182,6 +221,7 @@ impl MachineSnapshot {
 
 /// Successful event result after atomic state publication.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunOutcome {
     pub state: BTreeMap<String, JsonValue>,
     pub value: JsonValue,
@@ -189,6 +229,7 @@ pub struct RunOutcome {
 
 /// Deterministically recomputed governance evidence from pure VM transitions.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AuditEvent {
     /// Stable trace entry kind.
     pub kind: String,
@@ -316,6 +357,7 @@ impl Machine {
             grant_fingerprint: compiled_grants.fingerprint,
             grant_request_hashes: compiled_grants.request_hashes,
             authority: AuthorityLedger::default(),
+            outstanding_receipts: BTreeSet::new(),
             trace_position: 0,
             trace_hash: String::new(),
             pending_effect: None,
@@ -338,6 +380,9 @@ impl Machine {
     pub fn restore(program: Program, snapshot: MachineSnapshot) -> Result<Self, MachineError> {
         if snapshot.schema_version != 1 {
             return Err(MachineError::SnapshotSchemaMismatch);
+        }
+        if snapshot.runtime_version != env!("CARGO_PKG_VERSION") {
+            return Err(MachineError::RuntimeVersionMismatch);
         }
         snapshot.validate_no_secrets()?;
         if snapshot.compute_hash()? != snapshot.snapshot_hash {
@@ -365,6 +410,41 @@ impl Machine {
     pub fn set_trace_checkpoint(&mut self, position: u64, hash: String) {
         self.snapshot.trace_position = position;
         self.snapshot.trace_hash = hash;
+    }
+
+    /// Returns deterministic before/reservation/after evidence for the pending effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing effect or an unexpected serialization failure.
+    pub fn pending_budget_evidence(&self) -> Result<JsonValue, MachineError> {
+        let pending = self
+            .snapshot
+            .pending_effect
+            .as_ref()
+            .ok_or(MachineError::NoPendingEffect)?;
+        let variable_maximums: BTreeMap<_, _> = pending
+            .usage_reservations
+            .iter()
+            .map(|(name, reservation)| (name.clone(), reservation.maximum()))
+            .collect();
+        Ok(json!({
+            "before": pending.budget_before,
+            "count_reservation": pending.reservation,
+            "variable_reservations": pending.usage_reservations,
+            "variable_maximums": variable_maximums,
+            "after_reservation": self.snapshot.budget,
+        }))
+    }
+
+    /// Returns the deterministic current budget ledger for trace settlement evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a controlled error if serialization unexpectedly fails.
+    pub fn budget_evidence(&self) -> Result<JsonValue, MachineError> {
+        serde_json::to_value(&self.snapshot.budget)
+            .map_err(|error| MachineError::Serialization(error.to_string()))
     }
 
     /// Executes exactly one pure instruction or reports one suspension/terminal state.
@@ -423,24 +503,46 @@ impl Machine {
                 .settle(reservation, actual)
                 .map_err(|error| MachineError::Budget(error.to_string()))?;
         }
-        let value = match pending.completion {
+        let value = self.decode_resolution(
+            pending.completion,
+            &pending.request.request_hash,
+            &resolution.payload,
+        )?;
+        self.frame_mut()?.slots.insert(pending.target, value);
+        self.advance()?;
+        self.snapshot.pending_effect = None;
+        Ok(())
+    }
+
+    fn decode_resolution(
+        &mut self,
+        completion: PendingCompletion,
+        request_provenance: &str,
+        payload: &JsonValue,
+    ) -> Result<RuntimeValue, MachineError> {
+        Ok(match completion {
             PendingCompletion::Model { expected_type } => {
-                RuntimeValue::Result(Ok(Box::new(RuntimeValue::Candidate(Box::new(
-                    decode_json(&resolution.payload, &expected_type, &self.program)?,
-                )))))
+                RuntimeValue::Result(Ok(Box::new(RuntimeValue::Candidate(ProvenancedValue {
+                    value: Box::new(decode_json(payload, &expected_type, &self.program)?),
+                    provenance: request_provenance.to_owned(),
+                }))))
             }
             PendingCompletion::Read { expected_type } => {
-                RuntimeValue::Result(Ok(Box::new(RuntimeValue::Observation(Box::new(
-                    decode_json(&resolution.payload, &expected_type, &self.program)?,
-                )))))
+                RuntimeValue::Result(Ok(Box::new(RuntimeValue::Observation(ProvenancedValue {
+                    value: Box::new(decode_json(payload, &expected_type, &self.program)?),
+                    provenance: request_provenance.to_owned(),
+                }))))
             }
             PendingCompletion::Approval {
                 proposal,
                 policy,
                 expires_at,
             } => {
-                let approved = resolution
-                    .payload
+                let decision = payload
+                    .as_object()
+                    .filter(|decision| decision.len() == 1)
+                    .ok_or_else(|| MachineError::TypeMismatch("approval response".to_owned()))?;
+                let approved = decision
                     .get("approved")
                     .and_then(JsonValue::as_bool)
                     .ok_or_else(|| MachineError::TypeMismatch("approval response".to_owned()))?;
@@ -449,7 +551,9 @@ impl Machine {
                         &proposal,
                         &policy,
                         &self.snapshot.grant_fingerprint,
+                        &self.snapshot.event_time,
                         &expires_at,
+                        "human_approval",
                     );
                     self.audit_events.push(AuditEvent {
                         kind: "permit_issued".to_owned(),
@@ -467,20 +571,18 @@ impl Machine {
                 action,
                 proposal_hash,
                 expected_type,
-            } => RuntimeValue::Result(Ok(Box::new(RuntimeValue::Receipt(ReceiptValue {
-                action,
-                proposal_hash,
-                value: Box::new(decode_json(
-                    &resolution.payload,
-                    &expected_type,
-                    &self.program,
-                )?),
-            })))),
-        };
-        self.frame_mut()?.slots.insert(pending.target, value);
-        self.advance()?;
-        self.snapshot.pending_effect = None;
-        Ok(())
+            } => {
+                let value = decode_json(payload, &expected_type, &self.program)?;
+                self.snapshot
+                    .outstanding_receipts
+                    .insert(proposal_hash.clone());
+                RuntimeValue::Result(Ok(Box::new(RuntimeValue::Receipt(ReceiptValue {
+                    action,
+                    proposal_hash,
+                    value: Box::new(value),
+                }))))
+            }
+        })
     }
 
     /// Reserves fixture-declared variable maximum usage before driver invocation.
@@ -618,6 +720,7 @@ impl Machine {
             }
             InstructionKind::Evaluate { .. }
             | InstructionKind::Bind { .. }
+            | InstructionKind::Copy { .. }
             | InstructionKind::Call { .. }
             | InstructionKind::UnwrapResult { .. }
             | InstructionKind::Branch { .. }
@@ -654,7 +757,9 @@ impl Machine {
             "data": self.named_values_json(arguments)?,
             "expected_type": prompt_spec.result_type,
             "source_provenance": self.program.source_hash,
+            "count_budget": {"dimension": "model_calls", "maximum": 1},
         });
+        let budget_before = self.snapshot.budget.clone();
         let reservation = self
             .snapshot
             .budget
@@ -664,6 +769,7 @@ impl Machine {
         self.snapshot.pending_effect = Some(PendingEffect {
             request: request.clone(),
             target,
+            budget_before,
             reservation: Some(reservation),
             usage_reservations: BTreeMap::new(),
             completion: PendingCompletion::Model {
@@ -686,6 +792,9 @@ impl Machine {
                 .ok_or(MachineError::MissingReturnTarget)?;
             self.frame_mut()?.slots.insert(target, returned);
             return Ok(None);
+        }
+        if !self.snapshot.outstanding_receipts.is_empty() {
+            return Err(MachineError::UnreconciledReceipt);
         }
         let value = runtime_to_json(&returned)?;
         let mut state = self.snapshot.current_state.clone();
@@ -712,6 +821,11 @@ impl Machine {
             InstructionKind::Bind { name, value } => {
                 let value = self.slot(*value)?.clone();
                 self.frame_mut()?.locals.insert(name.clone(), value);
+                self.advance()?;
+            }
+            InstructionKind::Copy { target, source } => {
+                let value = self.slot(*source)?.clone();
+                self.frame_mut()?.slots.insert(*target, value);
                 self.advance()?;
             }
             InstructionKind::UnwrapResult { target, result } => {
@@ -804,14 +918,18 @@ impl Machine {
         candidate: ValueId,
         validator: &str,
     ) -> Result<(), MachineError> {
-        let RuntimeValue::Candidate(value) = self.slot(candidate)?.clone() else {
+        let RuntimeValue::Candidate(candidate) = self.slot(candidate)?.clone() else {
             return Err(MachineError::TypeMismatch("Candidate".to_owned()));
         };
-        let valid = self.validator_accepts(validator, vec![(*value).clone()])?;
-        let result = if valid {
-            RuntimeValue::Result(Ok(Box::new(RuntimeValue::Checked(value))))
+        let failures = self.validator_failures(validator, vec![(*candidate.value).clone()])?;
+        let result = if failures.is_empty() {
+            RuntimeValue::Result(Ok(Box::new(RuntimeValue::Checked(candidate))))
         } else {
-            RuntimeValue::Result(Err("validation failed".to_owned()))
+            RuntimeValue::Result(Err(format!(
+                "validator `{validator}` failed requirements at {}; provenance {}",
+                failures.join(", "),
+                candidate.provenance
+            )))
         };
         self.frame_mut()?.slots.insert(target, result);
         self.advance()
@@ -843,7 +961,9 @@ impl Machine {
         let payload = json!({
             "action": action,
             "arguments": arguments_json,
+            "count_budget": {"dimension": "external_reads", "maximum": 1},
         });
+        let budget_before = self.snapshot.budget.clone();
         let reservation = self
             .snapshot
             .budget
@@ -853,6 +973,7 @@ impl Machine {
         self.snapshot.pending_effect = Some(PendingEffect {
             request: request.clone(),
             target,
+            budget_before,
             reservation: Some(reservation),
             usage_reservations: BTreeMap::new(),
             completion: PendingCompletion::Read {
@@ -919,14 +1040,19 @@ impl Machine {
         let capability_request =
             self.capability_request_json(tool.capability.as_ref(), &arguments_map)?;
         self.require_capability(&capability_request)?;
+        let risk = tool.risk.ok_or(MachineError::MissingRisk)?;
+        let sensitivity = tool.sensitivity.ok_or(MachineError::MissingSensitivity)?;
         let proposal = Proposal::new(
             action,
             arguments_map,
             intent,
-            tool.risk.as_deref().unwrap_or("reversible"),
-            capability_request,
-            idempotency_key,
-            &self.program.program_hash,
+            ProposalMetadata {
+                risk,
+                sensitivity,
+                capability_request,
+                idempotency_key: idempotency_key.to_owned(),
+                program_hash: self.program.program_hash.clone(),
+            },
         )
         .map_err(|error| MachineError::Serialization(error.to_string()))?;
         self.frame_mut()?
@@ -952,7 +1078,9 @@ impl Machine {
                     &proposal,
                     &policy,
                     &self.snapshot.grant_fingerprint,
+                    &self.snapshot.event_time,
                     &proposal.intent.expires_at,
+                    "direct_allow",
                 );
                 self.audit_events.push(AuditEvent {
                     kind: "policy_decision".to_owned(),
@@ -994,7 +1122,9 @@ impl Machine {
                     "policy": policy,
                     "proposal_hash": proposal.hash(),
                     "principal": principal_json,
+                    "count_budget": {"dimension": "approvals", "maximum": 1},
                 });
+                let budget_before = self.snapshot.budget.clone();
                 let reservation = self
                     .snapshot
                     .budget
@@ -1004,6 +1134,7 @@ impl Machine {
                 self.snapshot.pending_effect = Some(PendingEffect {
                     request: request.clone(),
                     target,
+                    budget_before,
                     reservation: Some(reservation),
                     usage_reservations: BTreeMap::new(),
                     completion: PendingCompletion::Approval {
@@ -1062,6 +1193,7 @@ impl Machine {
                 "proposal_hash": proposal.hash(),
             }),
         });
+        let budget_before = self.snapshot.budget.clone();
         let reservation = self
             .snapshot
             .budget
@@ -1080,11 +1212,13 @@ impl Machine {
             "action": action,
             "arguments": proposal.arguments,
             "proposal_hash": proposal_hash,
+            "count_budget": {"dimension": "external_writes", "maximum": 1},
         });
         let request = effect_request(EffectKind::Write, action.clone(), payload)?;
         self.snapshot.pending_effect = Some(PendingEffect {
             request: request.clone(),
             target,
+            budget_before,
             reservation: Some(reservation),
             usage_reservations: BTreeMap::new(),
             completion: PendingCompletion::Write {
@@ -1109,10 +1243,11 @@ impl Machine {
         let RuntimeValue::Observation(observation) = self.slot(observation)?.clone() else {
             return Err(MachineError::TypeMismatch("Observation".to_owned()));
         };
-        let valid = self.validator_accepts(
+        let failures = self.validator_failures(
             validator,
-            vec![(*receipt.value).clone(), (*observation).clone()],
+            vec![(*receipt.value).clone(), (*observation.value).clone()],
         )?;
+        let valid = failures.is_empty();
         self.audit_events.push(AuditEvent {
             kind: "reconciliation_decision".to_owned(),
             payload: json!({
@@ -1122,9 +1257,16 @@ impl Machine {
             }),
         });
         let value = if valid {
+            self.snapshot
+                .outstanding_receipts
+                .remove(&receipt.proposal_hash);
             RuntimeValue::Result(Ok(Box::new(RuntimeValue::Reconciled(receipt))))
         } else {
-            RuntimeValue::Result(Err("reconciliation failed".to_owned()))
+            RuntimeValue::Result(Err(format!(
+                "reconciliation validator `{validator}` failed requirements at {}; provenance {}",
+                failures.join(", "),
+                observation.provenance
+            )))
         };
         self.frame_mut()?.slots.insert(target, value);
         self.advance()
@@ -1160,11 +1302,11 @@ impl Machine {
             .collect()
     }
 
-    fn validator_accepts(
+    fn validator_failures(
         &self,
         name: &str,
         values: Vec<RuntimeValue>,
-    ) -> Result<bool, MachineError> {
+    ) -> Result<Vec<String>, MachineError> {
         let validator = self
             .program
             .catalog
@@ -1178,14 +1320,18 @@ impl Machine {
             .map(|(parameter, value)| (parameter.name.clone(), value))
             .collect();
         let slots = BTreeMap::new();
+        let mut failures = Vec::new();
         for requirement in &validator.requirements {
-            if eval_expression(requirement, &locals, &slots, &self.program)?
+            if eval_expression(&requirement.expression, &locals, &slots, &self.program)?
                 != RuntimeValue::Bool(true)
             {
-                return Ok(false);
+                failures.push(format!(
+                    "{}:{}:{}",
+                    requirement.span.file, requirement.span.line, requirement.span.column
+                ));
             }
         }
-        Ok(true)
+        Ok(failures)
     }
 
     fn policy_decision(
@@ -1433,7 +1579,7 @@ fn eval_expression(
         PureExpression::Bool { value } => Ok(RuntimeValue::Bool(*value)),
         PureExpression::Int { value } => Ok(RuntimeValue::Int(*value)),
         PureExpression::Text { value } => Ok(RuntimeValue::Text(value.clone())),
-        PureExpression::Path { path } => resolve_path(path, locals),
+        PureExpression::Path { path } => resolve_path(path, locals, program),
         PureExpression::Slot { value } => {
             slots.get(value).cloned().ok_or(MachineError::UnknownValue)
         }
@@ -1494,7 +1640,13 @@ fn eval_named_expressions(
 fn resolve_path(
     path: &str,
     locals: &BTreeMap<String, RuntimeValue>,
+    program: &Program,
 ) -> Result<RuntimeValue, MachineError> {
+    match enum_constructor(path, &[], program) {
+        Ok(value) => return Ok(value),
+        Err(MachineError::UnsupportedPureExpression) => {}
+        Err(error) => return Err(error),
+    }
     let mut segments = path.split('.');
     let first = segments.next().ok_or(MachineError::UnknownValue)?;
     let mut value = match first {
@@ -1589,17 +1741,57 @@ fn eval_call(
         ("subset", [RuntimeValue::List(left), RuntimeValue::List(right)]) => Ok(
             RuntimeValue::Bool(left.iter().all(|value| right.contains(value))),
         ),
-        ("provenance", [value]) => {
-            let json = runtime_to_json(value)?;
-            canonical_sha256(&json)
-                .map(RuntimeValue::Text)
-                .map_err(|error| MachineError::Serialization(error.to_string()))
-        }
+        ("provenance", [value]) => provenance_of(value).map(RuntimeValue::Text),
         ("add_seconds", [RuntimeValue::Text(instant), RuntimeValue::Int(seconds)]) => {
             add_seconds(instant, *seconds).map(RuntimeValue::Text)
         }
         _ if program.routine(function).is_some() => eval_routine(function, values, program),
-        _ => Err(MachineError::UnsupportedPureExpression),
+        _ => enum_constructor(function, &values, program),
+    }
+}
+
+fn enum_constructor(
+    requested: &str,
+    values: &[RuntimeValue],
+    program: &Program,
+) -> Result<RuntimeValue, MachineError> {
+    let mut matches = program
+        .catalog
+        .enums
+        .iter()
+        .flat_map(|(enum_name, variants)| {
+            variants.iter().filter_map(move |(variant, payload)| {
+                let full = format!("{enum_name}.{variant}");
+                (requested == full || requested == variant).then_some((full, payload))
+            })
+        });
+    let Some((variant, payload_type)) = matches.next() else {
+        return Err(MachineError::UnsupportedPureExpression);
+    };
+    if matches.next().is_some() {
+        return Err(MachineError::UnknownValue);
+    }
+    let payload = match (payload_type, values) {
+        (None, []) => None,
+        (Some(_), [value]) => Some(Box::new(value.clone())),
+        _ => return Err(MachineError::TypeMismatch("enum constructor".to_owned())),
+    };
+    Ok(RuntimeValue::Enum { variant, payload })
+}
+
+fn provenance_of(value: &RuntimeValue) -> Result<String, MachineError> {
+    match value {
+        RuntimeValue::Incoming(value)
+        | RuntimeValue::Untrusted(value)
+        | RuntimeValue::Candidate(value)
+        | RuntimeValue::Checked(value)
+        | RuntimeValue::Observation(value) => Ok(value.provenance.clone()),
+        RuntimeValue::Receipt(receipt) | RuntimeValue::Reconciled(receipt) => {
+            Ok(receipt.proposal_hash.clone())
+        }
+        _ => Err(MachineError::TypeMismatch(
+            "provenance-bearing wrapper".to_owned(),
+        )),
     }
 }
 
@@ -1636,6 +1828,14 @@ fn eval_routine(
                     .cloned()
                     .ok_or(MachineError::UnknownValue)?;
                 locals.insert(name.clone(), value);
+                ip = ip.checked_add(1).ok_or(MachineError::InvalidIp)?;
+            }
+            InstructionKind::Copy { target, source } => {
+                let value = slots
+                    .get(source)
+                    .cloned()
+                    .ok_or(MachineError::UnknownValue)?;
+                slots.insert(*target, value);
                 ip = ip.checked_add(1).ok_or(MachineError::InvalidIp)?;
             }
             InstructionKind::Call {
@@ -1787,12 +1987,14 @@ fn decode_json(
         return decode_json(value, target, program);
     }
     match (ty.name.as_str(), ty.arguments.as_slice()) {
-        ("Incoming", [inner]) => Ok(RuntimeValue::Incoming(Box::new(decode_json(
-            value, inner, program,
-        )?))),
-        ("Untrusted", [inner]) => Ok(RuntimeValue::Untrusted(Box::new(decode_json(
-            value, inner, program,
-        )?))),
+        ("Incoming", [inner]) => Ok(RuntimeValue::Incoming(ProvenancedValue {
+            value: Box::new(decode_json(value, inner, program)?),
+            provenance: boundary_provenance("incoming", value, ty)?,
+        })),
+        ("Untrusted", [inner]) => Ok(RuntimeValue::Untrusted(ProvenancedValue {
+            value: Box::new(decode_json(value, inner, program)?),
+            provenance: boundary_provenance("untrusted", value, ty)?,
+        })),
         ("Option", [_]) if value.is_null() => Ok(RuntimeValue::Option(None)),
         ("Option", [inner]) => Ok(RuntimeValue::Option(Some(Box::new(decode_json(
             value, inner, program,
@@ -1813,7 +2015,7 @@ fn decode_json(
             .as_i64()
             .map(RuntimeValue::Int)
             .ok_or_else(|| MachineError::TypeMismatch(ty.name.clone())),
-        ("Text" | "Error", []) => value
+        ("Text" | "ProvenanceRef" | "Error", []) => value
             .as_str()
             .map(|value| RuntimeValue::Text(value.to_owned()))
             .ok_or_else(|| MachineError::TypeMismatch(ty.name.clone())),
@@ -1852,8 +2054,66 @@ fn decode_json(
                 .collect::<Result<BTreeMap<_, _>, _>>()
                 .map(RuntimeValue::Record)
         }
+        (name, []) if program.catalog.enums.contains_key(name) => {
+            decode_enum_json(name, value, program)
+        }
         _ => Err(MachineError::TypeMismatch(ty.name.clone())),
     }
+}
+
+fn boundary_provenance(
+    boundary: &str,
+    value: &JsonValue,
+    ty: &TypeSpec,
+) -> Result<String, MachineError> {
+    canonical_sha256(&json!({
+        "boundary": boundary,
+        "type": ty,
+        "value": value,
+    }))
+    .map_err(|error| MachineError::Serialization(error.to_string()))
+}
+
+fn decode_enum_json(
+    name: &str,
+    value: &JsonValue,
+    program: &Program,
+) -> Result<RuntimeValue, MachineError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| MachineError::TypeMismatch(name.to_owned()))?;
+    let variant = object
+        .get("variant")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| MachineError::TypeMismatch(name.to_owned()))?;
+    let variants = program
+        .catalog
+        .enums
+        .get(name)
+        .ok_or(MachineError::UnknownValue)?;
+    let payload_type = variants
+        .get(variant)
+        .ok_or_else(|| MachineError::TypeMismatch(name.to_owned()))?;
+    if object.keys().any(|key| key != "variant" && key != "value") {
+        return Err(MachineError::TypeMismatch(name.to_owned()));
+    }
+    let payload = match payload_type {
+        Some(payload_type) => Some(Box::new(decode_json(
+            object
+                .get("value")
+                .ok_or_else(|| MachineError::MissingInput("value".to_owned()))?,
+            payload_type,
+            program,
+        )?)),
+        None if object.contains_key("value") => {
+            return Err(MachineError::TypeMismatch(name.to_owned()));
+        }
+        None => None,
+    };
+    Ok(RuntimeValue::Enum {
+        variant: format!("{name}.{variant}"),
+        payload,
+    })
 }
 
 fn json_to_runtime(value: &JsonValue) -> Result<RuntimeValue, MachineError> {
@@ -1894,13 +2154,28 @@ fn runtime_to_json(value: &RuntimeValue) -> Result<JsonValue, MachineError> {
             .map(|(name, value)| Ok((name.clone(), runtime_to_json(value)?)))
             .collect::<Result<_, _>>()
             .map(JsonValue::Object),
-        RuntimeValue::Option(Some(value))
-        | RuntimeValue::Incoming(value)
-        | RuntimeValue::Untrusted(value)
-        | RuntimeValue::Candidate(value)
-        | RuntimeValue::Checked(value)
-        | RuntimeValue::Observation(value)
-        | RuntimeValue::Result(Ok(value)) => runtime_to_json(value),
+        RuntimeValue::Enum { variant, payload } => {
+            let short = variant
+                .rsplit('.')
+                .next()
+                .ok_or(MachineError::UnknownValue)?;
+            let mut object = serde_json::Map::from_iter([(
+                "variant".to_owned(),
+                JsonValue::String(short.to_owned()),
+            )]);
+            if let Some(payload) = payload {
+                object.insert("value".to_owned(), runtime_to_json(payload)?);
+            }
+            Ok(JsonValue::Object(object))
+        }
+        RuntimeValue::Option(Some(value)) | RuntimeValue::Result(Ok(value)) => {
+            runtime_to_json(value)
+        }
+        RuntimeValue::Incoming(ProvenancedValue { value, .. })
+        | RuntimeValue::Untrusted(ProvenancedValue { value, .. })
+        | RuntimeValue::Candidate(ProvenancedValue { value, .. })
+        | RuntimeValue::Checked(ProvenancedValue { value, .. })
+        | RuntimeValue::Observation(ProvenancedValue { value, .. }) => runtime_to_json(value),
         RuntimeValue::Result(Err(message)) => Ok(json!({"error": message})),
         RuntimeValue::Intent(intent) => serde_json::to_value(intent)
             .map_err(|error| MachineError::Serialization(error.to_string())),
@@ -1917,10 +2192,10 @@ fn runtime_to_json(value: &RuntimeValue) -> Result<JsonValue, MachineError> {
 fn project(value: RuntimeValue, field: &str) -> Result<RuntimeValue, MachineError> {
     match (value, field) {
         (
-            RuntimeValue::Incoming(value)
-            | RuntimeValue::Untrusted(value)
-            | RuntimeValue::Checked(value)
-            | RuntimeValue::Observation(value),
+            RuntimeValue::Incoming(ProvenancedValue { value, .. })
+            | RuntimeValue::Untrusted(ProvenancedValue { value, .. })
+            | RuntimeValue::Checked(ProvenancedValue { value, .. })
+            | RuntimeValue::Observation(ProvenancedValue { value, .. }),
             "value",
         ) => Ok(*value),
         (RuntimeValue::Record(mut fields), name) => {
@@ -1956,6 +2231,15 @@ fn match_pattern(value: &RuntimeValue, pattern: &PatternSpec) -> Option<PatternB
                 | ("Ok", RuntimeValue::Result(Ok(value))) => Some((**value).clone()),
                 ("Err", RuntimeValue::Result(Err(message))) => {
                     Some(RuntimeValue::Text(message.clone()))
+                }
+                (
+                    _,
+                    RuntimeValue::Enum {
+                        variant: actual,
+                        payload,
+                    },
+                ) if actual == path || actual.rsplit('.').next() == Some(variant) => {
+                    payload.as_deref().cloned()
                 }
                 _ => return None,
             };
@@ -2046,8 +2330,14 @@ pub enum MachineError {
     NonTotalPolicy,
     #[error("runtime requirement failed")]
     RequirementFailed,
+    #[error("handler completed with an unreconciled write receipt")]
+    UnreconciledReceipt,
     #[error("write tool is missing idempotency metadata")]
     MissingIdempotency,
+    #[error("write tool is missing risk metadata")]
+    MissingRisk,
+    #[error("tool is missing sensitivity metadata")]
+    MissingSensitivity,
     #[error("approval suspension is not representable")]
     ApprovalNotRepresentable,
     #[error("authority value is opaque")]
@@ -2058,6 +2348,8 @@ pub enum MachineError {
     ProgramMismatch,
     #[error("snapshot schema mismatch")]
     SnapshotSchemaMismatch,
+    #[error("snapshot runtime version mismatch")]
+    RuntimeVersionMismatch,
     #[error("snapshot hash mismatch")]
     SnapshotHashMismatch,
     #[error("secret persistence rejected")]

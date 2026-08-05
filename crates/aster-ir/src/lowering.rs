@@ -13,7 +13,7 @@ use crate::{
     Agent, CapabilitySpec, Catalog, FieldSpec, IR_SCHEMA_VERSION, Instruction, InstructionKind,
     MatchTarget, NamedExpression, NamedValue, PatternSpec, PolicyDecisionSpec, PolicyRuleSpec,
     PolicySpec, Program, ProgramError, PromptSpec, PureExpression, Routine, StateFieldSpec,
-    ToolMode, ToolSpec, TypeSpec, ValidatorSpec, ValueId,
+    ToolMode, ToolSpec, TypeSpec, ValidatorRequirementSpec, ValidatorSpec, ValueId,
 };
 
 /// Controlled failure to convert checked source into explicit IR.
@@ -171,6 +171,21 @@ fn catalog(module: &Module) -> Result<Catalog, LoweringError> {
                     fields_from_parameters(&value.parameters),
                 );
             }
+            DeclarationKind::Enum(value) => {
+                catalog.enums.insert(
+                    value.name.clone(),
+                    value
+                        .variants
+                        .iter()
+                        .map(|variant| {
+                            (
+                                variant.name.clone(),
+                                variant.payload.as_ref().map(type_spec),
+                            )
+                        })
+                        .collect(),
+                );
+            }
             DeclarationKind::Tool(value) => {
                 if let Some(spec) = tool_spec(value)? {
                     catalog.tools.insert(value.path.as_string(), spec);
@@ -184,7 +199,12 @@ fn catalog(module: &Module) -> Result<Catalog, LoweringError> {
                         requirements: value
                             .requirements
                             .iter()
-                            .map(pure_expression)
+                            .map(|requirement| -> Result<_, LoweringError> {
+                                Ok(ValidatorRequirementSpec {
+                                    expression: pure_expression(requirement)?,
+                                    span: requirement.span.clone(),
+                                })
+                            })
                             .collect::<Result<_, _>>()?,
                     },
                 );
@@ -322,29 +342,37 @@ impl<'a> RoutineBuilder<'a> {
 
     fn lower_block(&mut self, block: &Block) -> Result<(), LoweringError> {
         for statement in &block.statements {
-            match &statement.kind {
-                StatementKind::Let { name, value, .. } => {
-                    let value = self.lower_expression(value)?;
-                    self.push(InstructionKind::Bind {
-                        name: name.clone(),
-                        value,
-                    })?;
-                }
-                StatementKind::Require { condition } => {
-                    let condition = self.lower_expression(condition)?;
-                    self.push(InstructionKind::Require { condition })?;
-                }
-                StatementKind::UpdateState { fields } => {
-                    let fields = self.lower_fields(fields)?;
-                    self.push(InstructionKind::UpdateState { fields })?;
-                }
-                StatementKind::Return { value } => {
-                    let value = self.lower_expression(value)?;
-                    self.push(InstructionKind::Return { value })?;
-                }
-                StatementKind::Expression { expression } => {
-                    self.lower_expression(expression)?;
-                }
+            self.lower_statement(statement)?;
+        }
+        Ok(())
+    }
+
+    fn lower_statement(
+        &mut self,
+        statement: &aster_syntax::Statement,
+    ) -> Result<(), LoweringError> {
+        match &statement.kind {
+            StatementKind::Let { name, value, .. } => {
+                let value = self.lower_expression(value)?;
+                self.push(InstructionKind::Bind {
+                    name: name.clone(),
+                    value,
+                })?;
+            }
+            StatementKind::Require { condition } => {
+                let condition = self.lower_expression(condition)?;
+                self.push(InstructionKind::Require { condition })?;
+            }
+            StatementKind::UpdateState { fields } => {
+                let fields = self.lower_fields(fields)?;
+                self.push(InstructionKind::UpdateState { fields })?;
+            }
+            StatementKind::Return { value } => {
+                let value = self.lower_expression(value)?;
+                self.push(InstructionKind::Return { value })?;
+            }
+            StatementKind::Expression { expression } => {
+                self.lower_expression(expression)?;
             }
         }
         Ok(())
@@ -667,6 +695,7 @@ impl<'a> RoutineBuilder<'a> {
         then_block: &Block,
         else_block: &Block,
     ) -> Result<ValueId, LoweringError> {
+        let result = self.value()?;
         let condition = self.lower_expression(condition)?;
         let branch_index = self.push(InstructionKind::Branch {
             condition,
@@ -674,10 +703,18 @@ impl<'a> RoutineBuilder<'a> {
             else_target: 0,
         })?;
         let then_target = self.position()?;
-        self.lower_block(then_block)?;
+        let then_value = self.lower_block_value(then_block)?;
+        self.push(InstructionKind::Copy {
+            target: result,
+            source: then_value,
+        })?;
         let jump_index = self.push(InstructionKind::Jump { target: 0 })?;
         let else_target = self.position()?;
-        self.lower_block(else_block)?;
+        let else_value = self.lower_block_value(else_block)?;
+        self.push(InstructionKind::Copy {
+            target: result,
+            source: else_value,
+        })?;
         let end = self.position()?;
         self.instructions[branch_index].kind = InstructionKind::Branch {
             condition,
@@ -685,7 +722,7 @@ impl<'a> RoutineBuilder<'a> {
             else_target,
         };
         self.instructions[jump_index].kind = InstructionKind::Jump { target: end };
-        self.evaluate_pure_unit()
+        Ok(result)
     }
 
     fn lower_match(
@@ -693,6 +730,7 @@ impl<'a> RoutineBuilder<'a> {
         value: &Expression,
         arms: &[aster_syntax::MatchArm],
     ) -> Result<ValueId, LoweringError> {
+        let result = self.value()?;
         let value = self.lower_expression(value)?;
         let match_index = self.push(InstructionKind::Match {
             value,
@@ -705,7 +743,11 @@ impl<'a> RoutineBuilder<'a> {
                 pattern: pattern_spec(&arm.pattern),
                 target: self.position()?,
             });
-            self.lower_expression(&arm.value)?;
+            let arm_value = self.lower_expression(&arm.value)?;
+            self.push(InstructionKind::Copy {
+                target: result,
+                source: arm_value,
+            })?;
             jumps.push(self.push(InstructionKind::Jump { target: 0 })?);
         }
         let end = self.position()?;
@@ -716,7 +758,22 @@ impl<'a> RoutineBuilder<'a> {
         for jump in jumps {
             self.instructions[jump].kind = InstructionKind::Jump { target: end };
         }
-        self.evaluate_pure_unit()
+        Ok(result)
+    }
+
+    fn lower_block_value(&mut self, block: &Block) -> Result<ValueId, LoweringError> {
+        let Some((last, prefix)) = block.statements.split_last() else {
+            return self.evaluate_pure_unit();
+        };
+        for statement in prefix {
+            self.lower_statement(statement)?;
+        }
+        if let StatementKind::Expression { expression } = &last.kind {
+            self.lower_expression(expression)
+        } else {
+            self.lower_statement(last)?;
+            self.evaluate_pure_unit()
+        }
     }
 
     fn evaluate_pure_unit(&mut self) -> Result<ValueId, LoweringError> {

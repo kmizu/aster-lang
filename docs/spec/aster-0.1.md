@@ -1,7 +1,6 @@
 # ASTER 0.1 Language and Runtime Specification
 
-Status: normative for the 0.1 bootstrap. Features named here are unavailable
-until their implementation and conformance evidence land in the same change.
+Status: normative for the implemented ASTER 0.1 experimental vertical slice.
 
 ## Source and lexical form
 
@@ -165,14 +164,20 @@ Policies are ordered total decision tables. The first matching `allow`,
 `approve`, or `deny` rule wins and a final `otherwise` is mandatory. Approval is
 an external suspension after pure policy evaluation.
 
-Proposals are immutable. Permit and proposal consumption is affine; a commit
-requires matching action types and the runtime also checks proposal hash,
-expiry, capability fingerprint, unique permit identity, and unused status.
+Proposals are immutable and hash action, arguments, intent, risk, sensitivity,
+capability request, idempotency key, program identity, and schema version.
+Permit and proposal consumption is affine; a commit requires matching action
+types and the runtime also checks proposal hash, issue and expiry times,
+capability fingerprint, policy decision evidence, issuance-ledger membership,
+unique permit identity, and unused status.
 
 Per-event budget dimensions are `model_calls`, `model_tokens`,
 `external_reads`, `external_writes`, `approvals`, and `money_microunits`.
 Omitted dimensions are zero. Reservations happen before driver invocation and
-settlement rejects actual usage above the fixture-declared maximum.
+settlement rejects actual usage above the fixture-declared maximum. Each trace
+effect records the complete budget ledger before reservation, count and
+variable reservations, the ledger after reservation, actual and released
+usage, and the ledger after settlement; replay recomputes all of it.
 
 ## Prompt, secret, and boundary rules
 
@@ -187,12 +192,143 @@ carry `schema_version: 1`; unknown fields and privileged wrapper construction
 are rejected at the boundary. Instants normalize to RFC 3339 UTC seconds ending
 in `Z`. Runtime JSON objects use deterministic key ordering.
 
+## Versioned JSON boundary schemas
+
+All objects in this section reject unknown fields. A schema version other than
+the integer `1` is rejected. Files are UTF-8 JSON; traces are UTF-8 JSON Lines.
+Ordinary JSON can construct only declared data types and the external
+`Incoming`/`Untrusted` wrappers inserted by the runtime. It cannot construct
+`Candidate`, `Checked`, `Observation`, `Intent`, `Proposal`, `Permit`,
+`Receipt`, `Reconciled`, a capability value, or `Secret`.
+
+### Event and state
+
+The event input has exactly this shape:
+
+```json
+{
+  "schema_version": 1,
+  "event_id": "evt-001",
+  "event_time": "2026-08-05T12:00:00Z",
+  "agent_arguments": { "user": "user-001" },
+  "payload": { "text": "Schedule a meeting" }
+}
+```
+
+`event_time` must already be canonical `YYYY-MM-DDTHH:MM:SSZ`; offsets,
+fractional seconds, invalid dates, and leap seconds are rejected. Agent
+arguments and payload are decoded against the selected agent and handler.
+
+Initial state has exactly `{ "schema_version": 1, "state": OBJECT }`. Unknown
+state fields fail. Supplied fields are decoded against their declarations;
+omitted fields use their source-declared defaults. Final state has exactly the
+same envelope and contains every declared field in canonical name order.
+
+Null represents `Unit` or `None`; nonempty `Option<T>` uses the JSON shape of
+`T`. A user enum is `{"variant":"Name"}` for a nullary variant and
+`{"variant":"Name","value":PAYLOAD}` for a payload variant. The variant must
+belong to the statically expected enum, and extra keys are rejected.
+
+### Capability grants and fixtures
+
+Capability grants have exactly this shape:
+
+```json
+{
+  "schema_version": 1,
+  "grants": [
+    { "capability": "ModelUse", "arguments": ["planner"] }
+  ]
+}
+```
+
+Each name must resolve to a declared capability, argument count and types must
+match, and duplicate exact grants fail. Runtime authorization uses exact typed
+equality; the file has no wildcard syntax.
+
+Fixture files have this schema:
+
+```json
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "kind": "model",
+      "identity": "ParseMeeting",
+      "match_request": { "model_alias": "planner" },
+      "response": { "title": "Planning" },
+      "max_usage": { "model_tokens": 100 },
+      "actual_usage": { "model_tokens": 20 }
+    }
+  ]
+}
+```
+
+`kind` is `model`, `read`, `approval`, or `write`. `identity` is the resolved
+prompt, tool, or policy name. `match_request` is a nonempty recursive subset of
+the complete request payload. Matching uses kind and identity first, then that
+subset. Distinct simultaneous matches are ambiguous and fail; identical
+duplicate match templates are consumed in source order. `response` is decoded
+against the declared result schema. `max_usage` is reserved before the driver
+call and `actual_usage` must use only reserved dimensions and not exceed it.
+
+### Effect resolutions, traces, and snapshots
+
+A durable resume resolution has exactly:
+
+```json
+{
+  "request_hash": "sha256-hex",
+  "payload": {},
+  "actual_usage": {}
+}
+```
+
+The hash must equal the snapshot's pending request. Each trace line has exactly
+the following keys:
+
+```json
+{
+  "schema_version": 1,
+  "run_id": "sha256-hex",
+  "sequence": 0,
+  "kind": "run_header",
+  "payload": {},
+  "previous_entry_hash": "",
+  "entry_hash": "sha256-hex"
+}
+```
+
+Entries are contiguous and share one run ID. The implemented logical kinds are
+`run_header`, `event_received`, `fingerprints`, `effect_requested`,
+`budget_reserved`, `snapshot_written`, `effect_resolved`, `budget_settled`,
+`policy_decision`, `permit_issued`, `proposal_committed`,
+`reconciliation_decision`, `state_committed`, and exactly one terminal
+`run_completed` or `run_failed`.
+
+A snapshot is one JSON object with these top-level fields:
+`schema_version`, `runtime_version`, `program_hash`, `agent`, `event`,
+`event_id`, `event_time`, `input_hash`, `frames`, `current_state`,
+`pending_state`, `budget`, `grant_fingerprint`, `grant_request_hashes`,
+`authority`, `outstanding_receipts`, `trace_position`, `trace_hash`,
+`pending_effect`, and `snapshot_hash`. Frames contain `routine`,
+`instruction_pointer`, `locals`, `slots`, and `return_target`. A pending effect
+contains its complete request, target slot, count reservation, variable-usage
+reservations, pre-reservation budget ledger, and typed completion descriptor.
+Internal runtime values use a tagged `{ "kind": ..., "value": ... }` encoding;
+provenance-bearing wrappers
+store a stable non-secret provenance reference alongside their typed value.
+Snapshots reject unknown nested fields, secret handles, program/runtime/schema
+mismatches, and content-hash changes.
+
 ## Machine, trace, replay, and state
 
 Effectful source lowers to serializable explicit instructions. Machine state
 contains the instruction pointer, frames, locals, current state, pending state
-delta, budgets, capability fingerprint, affine ledger, trace position, and any
-pending request. No snapshot contains a host closure.
+delta, budgets, capability fingerprint, permit-consumption and
+outstanding-receipt ledgers, trace position, and any pending request. No
+snapshot contains a host closure. A top-level handler cannot complete while a
+committed receipt remains unreconciled.
 
 Trace entries contain schema version, run ID, sequence, kind, payload, previous
 entry hash, and entry hash. Hashing uses recursively key-sorted canonical JSON

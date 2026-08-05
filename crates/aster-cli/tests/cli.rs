@@ -39,6 +39,78 @@ fn run_args(directory: &Path) -> Vec<String> {
     ]
 }
 
+fn assert_resume(directory: &Path) {
+    let record_trace = directory.join("trace.jsonl");
+    let resume_trace = directory.join("resume.trace.jsonl");
+    fs::copy(&record_trace, &resume_trace).expect("resume trace copy");
+    let resolution_path = directory.join("resolution.json");
+    let resolutions: Vec<_> = fs::read_to_string(&record_trace)
+        .expect("trace reads")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("trace line is JSON"))
+        .filter(|entry| entry["kind"] == "effect_resolved")
+        .map(|entry| entry["payload"].clone())
+        .collect();
+    assert_eq!(resolutions.len(), 5);
+    let resume_snapshots = directory.join("resume-snapshots");
+    let resume_output = directory.join("resume-output.json");
+    let mut snapshot = directory.join("snapshots/snapshot-0000.json");
+    for (index, resolution) in resolutions.iter().enumerate() {
+        fs::write(
+            &resolution_path,
+            serde_json::to_vec(resolution).expect("resolution serializes"),
+        )
+        .expect("resolution writes");
+        let status = aster()
+            .args([
+                "resume",
+                example("main.aster").to_str().expect("UTF-8 path"),
+                "--snapshot",
+                snapshot.to_str().expect("UTF-8 path"),
+                "--resolution",
+                resolution_path.to_str().expect("UTF-8 path"),
+                "--trace",
+                resume_trace.to_str().expect("UTF-8 path"),
+                "--snapshot-dir",
+                resume_snapshots.to_str().expect("UTF-8 path"),
+                "--output-state",
+                resume_output.to_str().expect("UTF-8 path"),
+            ])
+            .status()
+            .expect("resume executes");
+        assert!(status.success(), "resume step {index} succeeds");
+        snapshot = resume_snapshots.join("resume-next.json");
+    }
+    assert_eq!(
+        fs::read(directory.join("record.json")).expect("recorded state reads"),
+        fs::read(&resume_output).expect("resumed state reads")
+    );
+
+    let replay_output = directory.join("resume-replay.json");
+    let status = aster()
+        .args([
+            "replay",
+            example("main.aster").to_str().expect("UTF-8 path"),
+            "--trace",
+            resume_trace.to_str().expect("UTF-8 path"),
+            "--input",
+            example("event.json").to_str().expect("UTF-8 path"),
+            "--state",
+            example("initial-state.json").to_str().expect("UTF-8 path"),
+            "--capabilities",
+            example("capabilities.json").to_str().expect("UTF-8 path"),
+            "--output-state",
+            replay_output.to_str().expect("UTF-8 path"),
+        ])
+        .status()
+        .expect("resumed trace replay executes");
+    assert!(status.success());
+    assert_eq!(
+        fs::read(resume_output).expect("resumed state reads"),
+        fs::read(replay_output).expect("replayed resumed state reads")
+    );
+}
+
 #[test]
 fn public_commands_check_format_ast_record_and_replay() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -78,6 +150,7 @@ fn public_commands_check_format_ast_record_and_replay() {
             .expect("record executes")
             .success()
     );
+    assert_resume(directory.path());
     let replay = directory.path().join("replay.json");
     assert!(
         aster()
@@ -118,6 +191,20 @@ fn exit_codes_distinguish_source_runtime_and_replay_failures() {
         .status()
         .expect("source check executes");
     assert_eq!(source_status.code(), Some(1));
+    let source_json = aster()
+        .args([
+            "check",
+            bad_source.to_str().expect("UTF-8 path"),
+            "--diagnostic-format",
+            "json",
+        ])
+        .output()
+        .expect("JSON source check executes");
+    assert_eq!(source_json.status.code(), Some(1));
+    assert!(source_json.stderr.is_empty());
+    let diagnostics: serde_json::Value =
+        serde_json::from_slice(&source_json.stdout).expect("diagnostics are stdout JSON");
+    assert_eq!(diagnostics[0]["code"], "ASTER-TYPE-2001");
 
     let missing_capabilities = directory.path().join("missing-capabilities.json");
     fs::write(
@@ -171,4 +258,70 @@ fn exit_codes_distinguish_source_runtime_and_replay_failures() {
         .status()
         .expect("replay executes");
     assert_eq!(replay_status.code(), Some(3));
+}
+
+#[test]
+fn malformed_json_trace_and_snapshot_are_controlled_cli_failures() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let malformed = directory.path().join("malformed.json");
+    fs::write(&malformed, b"{not-json").expect("malformed input writes");
+
+    let mut runtime_args = run_args(directory.path());
+    let input_index = runtime_args
+        .iter()
+        .position(|value| value == "--input")
+        .expect("input argument")
+        + 1;
+    runtime_args[input_index] = malformed.display().to_string();
+    let runtime = aster()
+        .args(runtime_args)
+        .status()
+        .expect("malformed event is controlled");
+    assert_eq!(runtime.code(), Some(2));
+
+    let replay = aster()
+        .args([
+            "replay",
+            example("main.aster").to_str().expect("UTF-8 path"),
+            "--trace",
+            malformed.to_str().expect("UTF-8 path"),
+            "--input",
+            example("event.json").to_str().expect("UTF-8 path"),
+            "--state",
+            example("initial-state.json").to_str().expect("UTF-8 path"),
+            "--capabilities",
+            example("capabilities.json").to_str().expect("UTF-8 path"),
+            "--output-state",
+            directory
+                .path()
+                .join("replay.json")
+                .to_str()
+                .expect("UTF-8 path"),
+        ])
+        .status()
+        .expect("malformed trace is controlled");
+    assert_eq!(replay.code(), Some(3));
+
+    let resume = aster()
+        .args([
+            "resume",
+            example("main.aster").to_str().expect("UTF-8 path"),
+            "--snapshot",
+            malformed.to_str().expect("UTF-8 path"),
+            "--resolution",
+            malformed.to_str().expect("UTF-8 path"),
+            "--trace",
+            malformed.to_str().expect("UTF-8 path"),
+            "--snapshot-dir",
+            directory.path().to_str().expect("UTF-8 path"),
+            "--output-state",
+            directory
+                .path()
+                .join("resume.json")
+                .to_str()
+                .expect("UTF-8 path"),
+        ])
+        .status()
+        .expect("malformed snapshot is controlled");
+    assert_eq!(resume.code(), Some(2));
 }

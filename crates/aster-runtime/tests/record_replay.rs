@@ -380,11 +380,21 @@ fn replay_rejects_changed_input_before_effects() {
     let start = start_request();
     let mut driver = fixture_driver();
     let recorded = record_run(program.clone(), start.clone(), &mut driver).unwrap();
-    let mut changed = start;
+    let mut changed = start.clone();
     changed.event_id = "evt-other".to_owned();
 
     assert!(matches!(
-        replay_run(program, changed, &recorded.trace),
+        replay_run(program.clone(), changed, &recorded.trace),
+        Err(ReplayError::FingerprintMismatch)
+    ));
+
+    let mut changed_state = start;
+    changed_state.state.insert(
+        "profile".to_owned(),
+        json!({"known_attendees": ["different@example.test"]}),
+    );
+    assert!(matches!(
+        replay_run(program, changed_state, &recorded.trace),
         Err(ReplayError::FingerprintMismatch)
     ));
 }

@@ -17,14 +17,24 @@ pub enum BudgetDimension {
 
 /// One outstanding deterministic maximum reservation.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Reservation {
     id: u64,
     dimension: BudgetDimension,
     maximum: u64,
 }
 
+impl Reservation {
+    /// Returns the deterministic maximum held by this reservation.
+    #[must_use]
+    pub const fn maximum(self) -> u64 {
+        self.maximum
+    }
+}
+
 /// Remaining and reserved resource ledger.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Budget {
     remaining: BTreeMap<BudgetDimension, u64>,
     reservations: BTreeMap<u64, Reservation>,

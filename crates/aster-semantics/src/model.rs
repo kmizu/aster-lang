@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aster_syntax::{
-    AgentDeclaration, DeclarationKind, FunctionDeclaration, Module, PolicyDeclaration,
-    PromptDeclaration, ToolDeclaration, TypeDeclaration, TypeDefinition, TypeReference,
-    ValidatorDeclaration,
+    AgentDeclaration, DeclarationKind, EnumDeclaration, FunctionDeclaration, Module,
+    PolicyDeclaration, PromptDeclaration, ToolDeclaration, TypeDeclaration, TypeDefinition,
+    TypeReference, ValidatorDeclaration,
 };
 
 use crate::Type;
@@ -11,6 +11,7 @@ use crate::Type;
 pub(crate) struct Model<'a> {
     pub(crate) module: &'a Module,
     pub(crate) types: BTreeMap<String, &'a TypeDeclaration>,
+    pub(crate) enums: BTreeMap<String, &'a EnumDeclaration>,
     pub(crate) prompts: BTreeMap<String, &'a PromptDeclaration>,
     pub(crate) validators: BTreeMap<String, &'a ValidatorDeclaration>,
     pub(crate) functions: BTreeMap<String, &'a FunctionDeclaration>,
@@ -25,6 +26,7 @@ impl<'a> Model<'a> {
         let mut model = Self {
             module,
             types: BTreeMap::new(),
+            enums: BTreeMap::new(),
             prompts: BTreeMap::new(),
             validators: BTreeMap::new(),
             functions: BTreeMap::new(),
@@ -38,7 +40,10 @@ impl<'a> Model<'a> {
                 DeclarationKind::Type(value) => {
                     model.types.entry(value.name.clone()).or_insert(value);
                 }
-                DeclarationKind::Enum(_) | DeclarationKind::Capability(_) => {}
+                DeclarationKind::Enum(value) => {
+                    model.enums.entry(value.name.clone()).or_insert(value);
+                }
+                DeclarationKind::Capability(_) => {}
                 DeclarationKind::Prompt(value) => {
                     model.prompts.entry(value.name.clone()).or_insert(value);
                 }
@@ -220,5 +225,24 @@ impl<'a> Model<'a> {
         self.module.declarations.iter().any(|declaration| {
             matches!(&declaration.kind, DeclarationKind::Enum(value) if value.name == name)
         })
+    }
+
+    pub(crate) fn enum_variant(&self, requested: &str) -> Option<(String, Option<Type>)> {
+        let mut matches = self.enums.iter().flat_map(|(enum_name, declaration)| {
+            declaration.variants.iter().filter_map(move |variant| {
+                let full = format!("{enum_name}.{}", variant.name);
+                (requested == full || requested == variant.name).then(|| {
+                    (
+                        enum_name.clone(),
+                        variant
+                            .payload
+                            .as_ref()
+                            .map(|payload| self.resolve_type(payload)),
+                    )
+                })
+            })
+        });
+        let result = matches.next()?;
+        matches.next().is_none().then_some(result)
     }
 }

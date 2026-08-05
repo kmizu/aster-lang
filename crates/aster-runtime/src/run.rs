@@ -154,7 +154,7 @@ fn record_attempt<D: EffectDriver>(
                 trace.append("effect_requested", to_value(&request)?)?;
                 let preview = driver.preview(&request)?;
                 machine.reserve_pending_usage(&preview.max_usage)?;
-                trace.append("budget_reserved", to_value(&preview.max_usage)?)?;
+                trace.append("budget_reserved", machine.pending_budget_evidence()?)?;
                 let (position, hash) = trace.checkpoint()?;
                 machine.set_trace_checkpoint(position, hash);
                 let snapshot = machine.snapshot()?;
@@ -167,7 +167,15 @@ fn record_attempt<D: EffectDriver>(
                 trace.append("effect_resolved", to_value(&resolution)?)?;
                 machine.supply(&resolution)?;
                 append_audit_events(trace, machine.take_audit_events())?;
-                trace.append("budget_settled", to_value(&resolution.actual_usage)?)?;
+                trace.append(
+                    "budget_settled",
+                    budget_settlement_evidence(
+                        &preview.max_usage,
+                        &resolution.actual_usage,
+                        &machine.budget_evidence()?,
+                    )
+                    .map_err(RunError::Data)?,
+                )?;
             }
             Step::Completed(outcome) => {
                 trace.append("state_committed", to_value(&outcome.state)?)?;
@@ -195,8 +203,10 @@ pub fn replay_run(
     let recorded_requests: Vec<_> = payloads(trace, "effect_requested").collect();
     let recorded_reservations: Vec<_> = payloads(trace, "budget_reserved").collect();
     let recorded_resolutions: Vec<_> = payloads(trace, "effect_resolved").collect();
+    let recorded_settlements: Vec<_> = payloads(trace, "budget_settled").collect();
     if recorded_requests.len() != recorded_reservations.len()
         || recorded_requests.len() != recorded_resolutions.len()
+        || recorded_requests.len() != recorded_settlements.len()
     {
         return Err(ReplayError::EffectSequenceMismatch);
     }
@@ -217,12 +227,18 @@ pub fn replay_run(
                 if request != expected {
                     return Err(ReplayError::RequestDivergence);
                 }
+                let recorded_reservation = recorded_reservations
+                    .get(effect_index)
+                    .ok_or(ReplayError::EffectSequenceMismatch)?;
                 let maximums = from_value(
-                    recorded_reservations
-                        .get(effect_index)
+                    recorded_reservation
+                        .get("variable_maximums")
                         .ok_or(ReplayError::EffectSequenceMismatch)?,
                 )?;
                 machine.reserve_pending_usage(&maximums)?;
+                if machine.pending_budget_evidence()? != **recorded_reservation {
+                    return Err(ReplayError::BudgetDivergence);
+                }
                 let resolution: EffectResolution = from_value(
                     recorded_resolutions
                         .get(effect_index)
@@ -230,6 +246,15 @@ pub fn replay_run(
                 )?;
                 machine.supply(&resolution)?;
                 generated_audit.extend(machine.take_audit_events());
+                let settlement = budget_settlement_evidence(
+                    &maximums,
+                    &resolution.actual_usage,
+                    &machine.budget_evidence()?,
+                )
+                .map_err(ReplayError::Data)?;
+                if Some(&settlement) != recorded_settlements.get(effect_index).copied() {
+                    return Err(ReplayError::BudgetDivergence);
+                }
                 effect_index = effect_index
                     .checked_add(1)
                     .ok_or(ReplayError::EffectSequenceMismatch)?;
@@ -298,6 +323,35 @@ fn append_audit_events(trace: &mut Trace, events: Vec<AuditEvent>) -> Result<(),
     Ok(())
 }
 
+/// Builds canonical actual/released/after evidence after one effect settles.
+///
+/// # Errors
+///
+/// Rejects actual usage above the maximum supplied before driver invocation.
+pub fn budget_settlement_evidence(
+    maximums: &std::collections::BTreeMap<String, u64>,
+    actual: &std::collections::BTreeMap<String, u64>,
+    after: &Value,
+) -> Result<Value, String> {
+    let released = maximums
+        .iter()
+        .map(|(name, maximum)| {
+            let actual = actual.get(name).copied().unwrap_or(0);
+            maximum
+                .checked_sub(actual)
+                .map(|released| (name.clone(), released))
+                .ok_or_else(|| format!("actual usage exceeds maximum for {name}"))
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()?;
+    Ok(json!({
+        "count_actual": 1,
+        "count_released": 0,
+        "variable_actual": actual,
+        "variable_released": released,
+        "after_settlement": after,
+    }))
+}
+
 fn is_audit_kind(kind: &str) -> bool {
     matches!(
         kind,
@@ -347,6 +401,8 @@ pub enum ReplayError {
     OutcomeDivergence,
     #[error("replayed governance evidence diverged")]
     GovernanceDivergence,
+    #[error("replayed budget evidence diverged")]
+    BudgetDivergence,
     #[error("replay data failure: {0}")]
     Data(String),
 }

@@ -9,6 +9,9 @@ pub enum CanonicalError {
     /// A typed value could not be represented as JSON.
     #[error("canonical JSON conversion failed: {0}")]
     Serialization(serde_json::Error),
+    /// A persisted digest does not match canonical content.
+    #[error("canonical digest mismatch")]
+    DigestMismatch,
 }
 
 /// Serializes a JSON value with recursively sorted object keys and no spacing.

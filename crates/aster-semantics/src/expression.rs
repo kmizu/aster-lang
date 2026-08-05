@@ -288,6 +288,20 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
             self.check_arguments(&flow.parameters, arguments, environment, context);
             return self.model.resolve_type(&flow.return_type);
         }
+        if let Some((enum_name, payload)) = self.model.enum_variant(&name) {
+            let values = arguments
+                .iter()
+                .map(|argument| self.check_expression(&argument.value, environment, context))
+                .collect::<Vec<_>>();
+            match (payload, values.as_slice()) {
+                (None, []) => {}
+                (Some(expected), [actual]) => {
+                    self.expect_type(&expected, actual, &callee.span);
+                }
+                _ => self.type_mismatch("enum constructor argument mismatch", &callee.span),
+            }
+            return Type::Named(enum_name);
+        }
         self.check_builtin(&name, arguments, environment, context, &callee.span)
     }
 
@@ -601,6 +615,9 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
     }
 
     fn resolve_path(&mut self, path: &Path, environment: &Environment) -> Type {
+        if let Some((enum_name, None)) = self.model.enum_variant(&path.as_string()) {
+            return Type::Named(enum_name);
+        }
         let Some(first) = path.segments.first() else {
             return Type::Unknown;
         };

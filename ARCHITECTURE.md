@@ -38,9 +38,10 @@ layer that owns the violated invariant.
 
 `Candidate<T>` hides model output until a validator produces `Checked<T>`.
 `Proposal<A>` immutably binds a write action, arguments, intent, risk,
-capability request, idempotency key, program hash, and schema. `Permit<A>` is an
-expiring single-use runtime value bound to exactly one proposal hash. `Receipt`
-must be reconciled against a later observation before normal completion.
+sensitivity, capability request, idempotency key, program hash, and schema.
+`Permit<A>` records issue/expiry times and decision evidence and is an expiring
+single-use runtime value bound to exactly one proposal hash. `Receipt` must be
+reconciled against a later observation before normal completion.
 
 Semantic enforcement locations are catalogued in the
 [security model](docs/design-docs/security-model.md) and diagnostics are listed
@@ -73,6 +74,6 @@ state transaction, budget, capability fingerprint, affine ledger, and trace
 position before accepting one matching resolution.
 
 The full rationale is in
-[runtime-and-replay.md](docs/design-docs/runtime-and-replay.md). The current
-implementation sequence is tracked by the
-[active execution plan](docs/exec-plans/active/bootstrap-aster-0.1.md).
+[runtime-and-replay.md](docs/design-docs/runtime-and-replay.md). The
+implementation sequence and validation evidence are recorded in the
+[completed execution plan](docs/exec-plans/completed/bootstrap-aster-0.1.md).

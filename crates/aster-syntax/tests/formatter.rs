@@ -79,3 +79,24 @@ fn meeting_example_format_round_trip_preserves_its_normalized_ast() {
     assert_eq!(after, before);
     assert_eq!(formatted, source.text());
 }
+
+#[test]
+fn every_compile_pass_fixture_is_already_canonical() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = root.join("tests/conformance/pass");
+    let mut paths = std::fs::read_dir(directory)
+        .expect("pass fixture directory")
+        .map(|entry| entry.expect("fixture entry").path())
+        .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths {
+        let text = std::fs::read_to_string(&path).expect("fixture is UTF-8");
+        let source = SourceFile::new(path.display().to_string(), text.clone());
+        assert_eq!(
+            format_source(&source).expect("pass fixture formats"),
+            text,
+            "{} is not canonical",
+            path.display()
+        );
+    }
+}

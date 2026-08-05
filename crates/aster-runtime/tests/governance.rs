@@ -3,9 +3,25 @@ use std::collections::BTreeMap;
 use aster_runtime::{
     AuthorityError, AuthorityLedger, Budget, BudgetDimension, BudgetError, DriverError,
     EffectDriver, EffectKind, EffectRequest, FixtureDriver, FixtureEntry, FixtureSet, Intent,
-    Proposal, RuntimeValue, SnapshotError, Trace, TraceError, canonical_json,
+    Proposal, ProposalMetadata, RuntimeValue, SnapshotError, Trace, TraceError, canonical_json,
 };
 use serde_json::json;
+
+fn metadata(
+    risk: &str,
+    sensitivity: &str,
+    capability_request: serde_json::Value,
+    idempotency_key: &str,
+    program_hash: &str,
+) -> ProposalMetadata {
+    ProposalMetadata {
+        risk: risk.to_owned(),
+        sensitivity: sensitivity.to_owned(),
+        capability_request,
+        idempotency_key: idempotency_key.to_owned(),
+        program_hash: program_hash.to_owned(),
+    }
+}
 
 fn proposal() -> Proposal {
     Proposal::new(
@@ -19,95 +35,110 @@ fn proposal() -> Proposal {
             fields: BTreeMap::from([("expected".to_owned(), json!("created"))]),
             expires_at: "2026-08-05T12:02:00Z".to_owned(),
         },
-        "reversible",
-        json!({"capability": "CalendarWrite", "arguments": ["user-001"]}),
-        "evt-001",
-        "program-hash",
+        metadata(
+            "reversible",
+            "private",
+            json!({"capability": "CalendarWrite", "arguments": ["user-001"]}),
+            "evt-001",
+            "program-hash",
+        ),
     )
     .expect("proposal is canonicalizable")
+}
+
+fn assert_proposal_hash_changes(
+    base: &Proposal,
+    action: &str,
+    arguments: BTreeMap<String, serde_json::Value>,
+    intent: Intent,
+    metadata: ProposalMetadata,
+) {
+    let changed = Proposal::new(action, arguments, intent, metadata).expect("mutation hashes");
+    assert_ne!(changed.hash(), base.hash());
 }
 
 #[test]
 fn proposal_hash_binds_every_authority_relevant_field() {
     // Catches permits that authorize a mutable or incompletely hashed proposal.
     let base = proposal();
-    let base_hash = base.hash().to_owned();
-    let mutations = [
-        Proposal::new(
-            "Calendar.other",
-            base.arguments.clone(),
-            base.intent.clone(),
+    let same = || {
+        metadata(
             &base.risk,
+            &base.sensitivity,
             base.capability_request.clone(),
             &base.idempotency_key,
             &base.program_hash,
         )
-        .unwrap(),
-        Proposal::new(
-            &base.action,
-            BTreeMap::from([("owner".to_owned(), json!("other"))]),
-            base.intent.clone(),
-            &base.risk,
-            base.capability_request.clone(),
-            &base.idempotency_key,
-            &base.program_hash,
-        )
-        .unwrap(),
-        Proposal::new(
-            &base.action,
-            base.arguments.clone(),
-            Intent {
-                purpose: "Other".to_owned(),
-                ..base.intent.clone()
-            },
-            &base.risk,
-            base.capability_request.clone(),
-            &base.idempotency_key,
-            &base.program_hash,
-        )
-        .unwrap(),
-        Proposal::new(
-            &base.action,
-            base.arguments.clone(),
-            base.intent.clone(),
+    };
+    assert_proposal_hash_changes(
+        &base,
+        "Calendar.other",
+        base.arguments.clone(),
+        base.intent.clone(),
+        same(),
+    );
+    assert_proposal_hash_changes(
+        &base,
+        &base.action,
+        BTreeMap::from([("owner".to_owned(), json!("other"))]),
+        base.intent.clone(),
+        same(),
+    );
+    assert_proposal_hash_changes(
+        &base,
+        &base.action,
+        base.arguments.clone(),
+        Intent {
+            purpose: "Other".to_owned(),
+            ..base.intent.clone()
+        },
+        same(),
+    );
+    for changed in [
+        metadata(
             "irreversible",
+            &base.sensitivity,
             base.capability_request.clone(),
             &base.idempotency_key,
             &base.program_hash,
-        )
-        .unwrap(),
-        Proposal::new(
-            &base.action,
-            base.arguments.clone(),
-            base.intent.clone(),
+        ),
+        metadata(
             &base.risk,
+            "secret",
+            base.capability_request.clone(),
+            &base.idempotency_key,
+            &base.program_hash,
+        ),
+        metadata(
+            &base.risk,
+            &base.sensitivity,
             json!({"capability": "Other"}),
             &base.idempotency_key,
             &base.program_hash,
-        )
-        .unwrap(),
-        Proposal::new(
-            &base.action,
-            base.arguments.clone(),
-            base.intent.clone(),
+        ),
+        metadata(
             &base.risk,
+            &base.sensitivity,
             base.capability_request.clone(),
             "other-key",
             &base.program_hash,
-        )
-        .unwrap(),
-        Proposal::new(
-            &base.action,
-            base.arguments.clone(),
-            base.intent.clone(),
+        ),
+        metadata(
             &base.risk,
+            &base.sensitivity,
             base.capability_request.clone(),
             &base.idempotency_key,
             "other-program",
-        )
-        .unwrap(),
-    ];
-    assert!(mutations.iter().all(|value| value.hash() != base_hash));
+        ),
+    ] {
+        assert_proposal_hash_changes(
+            &base,
+            &base.action,
+            base.arguments.clone(),
+            base.intent.clone(),
+            changed,
+        );
+    }
 }
 
 #[test]
@@ -118,14 +149,32 @@ fn permit_is_bound_expiring_and_single_use() {
         &first.action,
         BTreeMap::from([("request_id".to_owned(), json!("evt-002"))]),
         first.intent.clone(),
-        &first.risk,
-        first.capability_request.clone(),
-        "evt-002",
-        &first.program_hash,
+        metadata(
+            &first.risk,
+            &first.sensitivity,
+            first.capability_request.clone(),
+            "evt-002",
+            &first.program_hash,
+        ),
     )
     .unwrap();
     let mut ledger = AuthorityLedger::default();
-    let permit = ledger.issue(&first, "DirectPolicy", "grant-a", "2026-08-05T12:01:00Z");
+    let permit = ledger.issue(
+        &first,
+        "DirectPolicy",
+        "grant-a",
+        "2026-08-05T12:00:00Z",
+        "2026-08-05T12:01:00Z",
+        "direct_allow",
+    );
+    let mut forged_json = serde_json::to_value(&permit).expect("permit serializes for persistence");
+    forged_json["policy"] = json!("ForgedPolicy");
+    let forged: aster_runtime::Permit =
+        serde_json::from_value(forged_json).expect("forged shape remains decodable");
+    assert_eq!(
+        ledger.consume(&first, &forged, "grant-a", "2026-08-05T12:00:30Z"),
+        Err(AuthorityError::ForgedPermit)
+    );
 
     assert_eq!(
         ledger.consume(&second, &permit, "grant-a", "2026-08-05T12:00:30Z"),

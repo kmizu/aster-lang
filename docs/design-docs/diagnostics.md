@@ -122,6 +122,11 @@ A commit already consumed this proposal. Construct and authorize a new one.
 An effect's capability kind is absent from the enclosing flow `uses` or agent
 `requires` list. Declare it explicitly.
 
+### ASTER-CAP-6002 — invalid runtime capability grant
+
+The versioned grant set is unsupported or lacks the exact canonical typed
+scope requested by the agent. Issue the exact capability and arguments.
+
 ### ASTER-PROMPT-7001 — dynamic prompt instruction
 
 Prompt instruction syntax is not one static triple-quoted block string. Move
@@ -144,3 +149,28 @@ name.
 ### ASTER-BUDGET-11002 — duplicate budget dimension
 
 One dimension has multiple limits. Keep exactly one deterministic limit.
+
+### ASTER-BUDGET-11003 — runtime budget exhausted
+
+The fixed effect cost or fixture-declared maximum cannot be reserved. Increase
+the per-event limit or reduce maximum usage; the driver was not invoked.
+
+### ASTER-RUNTIME-9001 — typed runtime failure
+
+External JSON, fixture data, authority, or a VM transition violated its typed
+boundary. Correct the artifact and retry from verified state.
+
+### ASTER-REPLAY-10001 — semantic replay divergence
+
+A recomputed request, governance decision, budget transition, or outcome does
+not match the trace. Use the exact original inputs and trace.
+
+### ASTER-REPLAY-10002 — trace or program mismatch
+
+The trace schema/hash chain is invalid or belongs to another program. Restore
+the unmodified JSON Lines trace and matching source.
+
+### ASTER-INTERNAL-9901 — protected invariant failure
+
+ASTER could not represent a compiler/runtime invariant safely. Preserve the
+inputs and report the deterministic failure context.
