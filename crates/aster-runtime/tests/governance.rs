@@ -1,0 +1,199 @@
+use std::collections::BTreeMap;
+
+use aster_runtime::{
+    AuthorityError, AuthorityLedger, Budget, BudgetDimension, BudgetError, Intent, Proposal,
+    RuntimeValue, SnapshotError, Trace, TraceError, canonical_json,
+};
+use serde_json::json;
+
+fn proposal() -> Proposal {
+    Proposal::new(
+        "Calendar.create",
+        BTreeMap::from([
+            ("owner".to_owned(), json!("user-001")),
+            ("request_id".to_owned(), json!("evt-001")),
+        ]),
+        Intent {
+            purpose: "ScheduleMeeting".to_owned(),
+            fields: BTreeMap::from([("expected".to_owned(), json!("created"))]),
+            expires_at: "2026-08-05T12:02:00Z".to_owned(),
+        },
+        "reversible",
+        json!({"capability": "CalendarWrite", "arguments": ["user-001"]}),
+        "evt-001",
+        "program-hash",
+    )
+    .expect("proposal is canonicalizable")
+}
+
+#[test]
+fn proposal_hash_binds_every_authority_relevant_field() {
+    // Catches permits that authorize a mutable or incompletely hashed proposal.
+    let base = proposal();
+    let base_hash = base.hash().to_owned();
+    let mutations = [
+        Proposal::new(
+            "Calendar.other",
+            base.arguments.clone(),
+            base.intent.clone(),
+            &base.risk,
+            base.capability_request.clone(),
+            &base.idempotency_key,
+            &base.program_hash,
+        )
+        .unwrap(),
+        Proposal::new(
+            &base.action,
+            BTreeMap::from([("owner".to_owned(), json!("other"))]),
+            base.intent.clone(),
+            &base.risk,
+            base.capability_request.clone(),
+            &base.idempotency_key,
+            &base.program_hash,
+        )
+        .unwrap(),
+        Proposal::new(
+            &base.action,
+            base.arguments.clone(),
+            Intent {
+                purpose: "Other".to_owned(),
+                ..base.intent.clone()
+            },
+            &base.risk,
+            base.capability_request.clone(),
+            &base.idempotency_key,
+            &base.program_hash,
+        )
+        .unwrap(),
+        Proposal::new(
+            &base.action,
+            base.arguments.clone(),
+            base.intent.clone(),
+            "irreversible",
+            base.capability_request.clone(),
+            &base.idempotency_key,
+            &base.program_hash,
+        )
+        .unwrap(),
+        Proposal::new(
+            &base.action,
+            base.arguments.clone(),
+            base.intent.clone(),
+            &base.risk,
+            json!({"capability": "Other"}),
+            &base.idempotency_key,
+            &base.program_hash,
+        )
+        .unwrap(),
+        Proposal::new(
+            &base.action,
+            base.arguments.clone(),
+            base.intent.clone(),
+            &base.risk,
+            base.capability_request.clone(),
+            "other-key",
+            &base.program_hash,
+        )
+        .unwrap(),
+        Proposal::new(
+            &base.action,
+            base.arguments.clone(),
+            base.intent.clone(),
+            &base.risk,
+            base.capability_request.clone(),
+            &base.idempotency_key,
+            "other-program",
+        )
+        .unwrap(),
+    ];
+    assert!(mutations.iter().all(|value| value.hash() != base_hash));
+}
+
+#[test]
+fn permit_is_bound_expiring_and_single_use() {
+    // Catches low-level callers bypassing source affine analysis.
+    let first = proposal();
+    let second = Proposal::new(
+        &first.action,
+        BTreeMap::from([("request_id".to_owned(), json!("evt-002"))]),
+        first.intent.clone(),
+        &first.risk,
+        first.capability_request.clone(),
+        "evt-002",
+        &first.program_hash,
+    )
+    .unwrap();
+    let mut ledger = AuthorityLedger::default();
+    let permit = ledger.issue(&first, "DirectPolicy", "grant-a", "2026-08-05T12:01:00Z");
+
+    assert_eq!(
+        ledger.consume(&second, &permit, "grant-a", "2026-08-05T12:00:30Z"),
+        Err(AuthorityError::ProposalMismatch)
+    );
+    assert_eq!(
+        ledger.consume(&first, &permit, "grant-b", "2026-08-05T12:00:30Z"),
+        Err(AuthorityError::GrantMismatch)
+    );
+    assert_eq!(
+        ledger.consume(&first, &permit, "grant-a", "2026-08-05T12:01:01Z"),
+        Err(AuthorityError::Expired)
+    );
+    ledger
+        .consume(&first, &permit, "grant-a", "2026-08-05T12:00:30Z")
+        .expect("matching permit is consumed once");
+    assert_eq!(
+        ledger.consume(&first, &permit, "grant-a", "2026-08-05T12:00:30Z"),
+        Err(AuthorityError::AlreadyConsumed)
+    );
+}
+
+#[test]
+fn budget_reservation_precedes_and_bounds_actual_usage() {
+    // Catches drivers being invoked before deterministic budget admission.
+    let mut budget = Budget::new(BTreeMap::from([
+        (BudgetDimension::ModelCalls, 1),
+        (BudgetDimension::ModelTokens, 100),
+    ]));
+    let reservation = budget
+        .reserve(BudgetDimension::ModelCalls, 1)
+        .expect("first model call fits");
+    assert_eq!(
+        budget.reserve(BudgetDimension::ModelCalls, 1),
+        Err(BudgetError::Exhausted(BudgetDimension::ModelCalls))
+    );
+    assert_eq!(
+        budget.settle(reservation, 2),
+        Err(BudgetError::ActualExceedsReservation)
+    );
+}
+
+#[test]
+fn canonical_json_and_trace_chain_are_deterministic_and_tamper_evident() {
+    let left = json!({"z": 1, "a": {"d": 2, "b": 1}});
+    let right = json!({"a": {"b": 1, "d": 2}, "z": 1});
+    assert_eq!(
+        canonical_json(&left).unwrap(),
+        canonical_json(&right).unwrap()
+    );
+
+    let mut trace = Trace::new("run-001");
+    trace.append("event_received", left).unwrap();
+    trace.append("run_completed", json!({"ok": true})).unwrap();
+    trace.verify().expect("original chain verifies");
+    trace.entries[0].payload = json!({"tampered": true});
+    assert_eq!(
+        trace.verify(),
+        Err(TraceError::HashMismatch { sequence: 0 })
+    );
+}
+
+#[test]
+fn secret_is_rejected_before_snapshot_serialization() {
+    let values = BTreeMap::from([(
+        "token".to_owned(),
+        RuntimeValue::secret_for_test("UNIQUE-SECRET-SENTINEL"),
+    )]);
+    let error = aster_runtime::snapshot_values(&values).expect_err("secret must not serialize");
+    assert_eq!(error, SnapshotError::SecretPresent);
+    assert!(!error.to_string().contains("UNIQUE-SECRET-SENTINEL"));
+}

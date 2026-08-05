@@ -70,6 +70,10 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   inference/observation/validation/intent/proposal/authorization/commit/
   reconciliation instructions. The meeting scheduler lowers without hidden AST
   effect evaluation, and IR JSON validates its content hash on read.
+- 2026-08-05: Began the runtime authority substrate with canonical JSON,
+  proposal hashing over every authority-relevant field, proposal-bound expiring
+  single-use permits, deterministic budget reservation/settlement, hash-chained
+  traces, and pre-serialization secret rejection.
 
 ## Discoveries and deviations
 
@@ -105,6 +109,9 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - `cargo test -p aster-ir --test lowering`: 3 tests passed for stable identity
   and JSON round-trip, explicit meeting governance order, and control-flow
   branch targets.
+- `cargo test -p aster-runtime --test governance`: 5 tests passed for proposal
+  binding, affine permit consumption, budgets, trace tamper detection, and
+  secret-safe snapshot rejection.
 
 ## Known limitations
 
