@@ -1,0 +1,15 @@
+[package]
+name = "aster-semantics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aster-diagnostics = { path = "../aster-diagnostics" }
+aster-syntax = { path = "../aster-syntax" }
+serde.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

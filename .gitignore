@@ -1,0 +1,7 @@
+/target/
+/.worktrees/
+/.aster/
+*.trace.jsonl
+*.snapshot.json
+*.output-state.json
+.DS_Store

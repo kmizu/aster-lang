@@ -40,11 +40,11 @@ skeletons listed in bootstrap section 5.
 rendering, and the checked-in diagnostic registry. All later crates consume
 these types.
 
-- [ ] Write diagnostics serialization/rendering and registry tests.
-- [ ] Run the narrow tests and confirm missing symbols/behavior fail.
-- [ ] Implement the workspace and diagnostics crate minimally.
-- [ ] Run format, diagnostics tests, architecture script, and docs script.
-- [ ] Record exact results in the active execution plan.
+- [x] Write diagnostics serialization/rendering and registry tests.
+- [x] Run the narrow tests and confirm missing symbols/behavior fail.
+- [x] Implement the workspace and diagnostics crate minimally.
+- [x] Run format, diagnostics tests, architecture script, and docs script.
+- [x] Record exact results in the active execution plan.
 
 ### Task 2: Lossless syntax and canonical formatting
 

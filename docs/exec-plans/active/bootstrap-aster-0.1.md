@@ -8,7 +8,7 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 
 ## Milestones
 
-- [ ] M1: Workspace, documentation skeleton, diagnostics, and mechanical checks.
+- [x] M1: Workspace, documentation skeleton, diagnostics, and mechanical checks.
 - [ ] M2: Lexer, parser, lossless comments, AST JSON, and canonical formatter.
 - [ ] M3: Names, types, wrappers, purity/effects, capabilities, affine analysis,
       recursion rejection, persistence checks, and conformance fixtures.
@@ -42,6 +42,12 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   approved design input and explicitly forbids clarification questions.
 - 2026-08-05: Selected the general hand-written compiler plus explicit-VM
   architecture; rejected example specialization and recursive effect execution.
+- 2026-08-05: Initialized the six-crate Rust workspace, stable diagnostic domain,
+  architecture/docs/production-source checks, CI entry point, normative docs,
+  security/runtime design docs, and the three required ADRs.
+- 2026-08-05: The first diagnostics TDD cycle failed on missing public symbols,
+  then passed five behavioral tests. Architecture and production-source checkers
+  were also verified against deliberately invalid temporary workspaces.
 
 ## Discoveries and deviations
 
@@ -55,6 +61,16 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - `find . -maxdepth 3 -mindepth 1 -print | sort`: only the two seed files.
 - `rustc --version`: `rustc 1.96.0 (ac68faa20 2026-05-25)`.
 - `cargo --version`: `cargo 1.96.0 (30a34c682 2026-05-25)`.
+- `cargo test --workspace --all-features`: 5 tests passed, 0 failed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  passed after documenting public error contracts and scoping the panic API scan
+  to production Rust rather than tests.
+- `bash scripts/tests/check-architecture.sh`: passed both valid and forbidden-edge
+  cases.
+- `bash scripts/tests/check-docs.sh`: passed with active-bootstrap allowance and
+  rejected a repository missing required documents.
+- `bash scripts/tests/check-production-rust.sh`: passed and rejected production
+  use of `expect` while permitting it in tests.
 
 ## Known limitations
 

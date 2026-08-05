@@ -1,0 +1,22 @@
+[package]
+name = "aster-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aster-diagnostics = { path = "../aster-diagnostics" }
+aster-ir = { path = "../aster-ir" }
+aster-semantics = { path = "../aster-semantics" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
