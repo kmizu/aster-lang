@@ -165,6 +165,12 @@ fn catalog(module: &Module) -> Result<Catalog, LoweringError> {
                     },
                 );
             }
+            DeclarationKind::Capability(value) => {
+                catalog.capabilities.insert(
+                    value.name.clone(),
+                    fields_from_parameters(&value.parameters),
+                );
+            }
             DeclarationKind::Tool(value) => {
                 if let Some(spec) = tool_spec(value)? {
                     catalog.tools.insert(value.path.as_string(), spec);

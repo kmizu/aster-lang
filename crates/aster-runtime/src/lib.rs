@@ -23,6 +23,9 @@ pub use machine::{
     AuditEvent, EffectKind, EffectRequest, EffectResolution, Machine, MachineError,
     MachineSnapshot, RunOutcome, StartRequest, Step,
 };
-pub use run::{RecordResult, ReplayError, RunError, record_run, replay_run};
+pub use run::{
+    RecordFailure, RecordResult, ReplayError, RunError, record_run, record_run_evidenced,
+    replay_run,
+};
 pub use trace::{Trace, TraceEntry, TraceError};
 pub use value::{ReceiptValue, RuntimeValue, SnapshotError, snapshot_values};

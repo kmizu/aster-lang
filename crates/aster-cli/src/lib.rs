@@ -12,7 +12,7 @@ use aster_diagnostics::{Diagnostic, DiagnosticCode, explain};
 use aster_ir::{Program, lower};
 use aster_runtime::{
     CapabilityGrants, EffectResolution, FixtureDriver, FixtureSet, Machine, MachineSnapshot,
-    StartRequest, Step, Trace, record_run, replay_run,
+    StartRequest, Step, Trace, record_run_evidenced, replay_run,
 };
 use aster_semantics::check_source;
 use aster_syntax::{SourceFile, format_source, parse};
@@ -253,16 +253,30 @@ fn run_command(files: RunFiles) -> Result<(), CliError> {
     validate_schema(state.schema_version, "initial state")?;
     let start = start_request(files.agent, files.event, input, state, capabilities);
     let mut driver = FixtureDriver::new(fixtures).map_err(CliError::runtime)?;
-    let recorded = record_run(program, start, &mut driver).map_err(CliError::runtime)?;
-    fs::create_dir_all(&files.snapshot_dir)?;
-    for (index, snapshot) in recorded.snapshots.iter().enumerate() {
+    let recorded = match record_run_evidenced(program, start, &mut driver) {
+        Ok(value) => value,
+        Err(failure) => {
+            write_snapshots(&files.snapshot_dir, &failure.snapshots)?;
+            if !failure.trace.entries.is_empty() {
+                atomic_write(&files.trace, failure.trace.to_json_lines()?.as_bytes())?;
+            }
+            return Err(CliError::runtime(failure.error));
+        }
+    };
+    write_snapshots(&files.snapshot_dir, &recorded.snapshots)?;
+    atomic_write(&files.trace, recorded.trace.to_json_lines()?.as_bytes())?;
+    write_state(&files.output_state, &recorded.outcome.state)?;
+    Ok(())
+}
+
+fn write_snapshots(directory: &Path, snapshots: &[MachineSnapshot]) -> Result<(), CliError> {
+    fs::create_dir_all(directory)?;
+    for (index, snapshot) in snapshots.iter().enumerate() {
         atomic_write(
-            &files.snapshot_dir.join(format!("snapshot-{index:04}.json")),
+            &directory.join(format!("snapshot-{index:04}.json")),
             snapshot.to_json()?.as_bytes(),
         )?;
     }
-    atomic_write(&files.trace, recorded.trace.to_json_lines()?.as_bytes())?;
-    write_state(&files.output_state, &recorded.outcome.state)?;
     Ok(())
 }
 

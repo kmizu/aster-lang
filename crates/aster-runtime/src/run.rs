@@ -19,6 +19,18 @@ pub struct RecordResult {
     pub snapshots: Vec<MachineSnapshot>,
 }
 
+/// Failed record run together with every durable artifact produced beforehand.
+#[derive(Debug, Error)]
+#[error("{error}")]
+pub struct RecordFailure {
+    /// Controlled runtime/driver/trace failure.
+    pub error: RunError,
+    /// Valid hash-chained trace ending in `run_failed` when representable.
+    pub trace: Trace,
+    /// Snapshots completed before the failure.
+    pub snapshots: Vec<MachineSnapshot>,
+}
+
 /// Drives a machine through admitted fixture effects and records every boundary.
 ///
 /// # Errors
@@ -30,13 +42,77 @@ pub fn record_run<D: EffectDriver>(
     start: StartRequest,
     driver: &mut D,
 ) -> Result<RecordResult, RunError> {
-    let input_hash = canonical_sha256(&start).map_err(|error| RunError::Data(error.to_string()))?;
-    let run_id = canonical_sha256(&json!({
+    record_run_evidenced(program, start, driver).map_err(|failure| failure.error)
+}
+
+/// Records a run while retaining partial evidence on every controlled failure.
+///
+/// # Errors
+///
+/// Returns the failure plus a hash-chained failure trace and prior snapshots.
+pub fn record_run_evidenced<D: EffectDriver>(
+    program: Program,
+    start: StartRequest,
+    driver: &mut D,
+) -> Result<RecordResult, RecordFailure> {
+    let input_hash = match canonical_sha256(&start) {
+        Ok(value) => value,
+        Err(error) => return Err(initial_record_failure(RunError::Data(error.to_string()))),
+    };
+    let run_id = match canonical_sha256(&json!({
         "program_hash": program.program_hash,
         "input_hash": input_hash,
-    }))
-    .map_err(|error| RunError::Data(error.to_string()))?;
+    })) {
+        Ok(value) => value,
+        Err(error) => return Err(initial_record_failure(RunError::Data(error.to_string()))),
+    };
     let mut trace = Trace::new(run_id);
+    let mut snapshots = Vec::new();
+    let result = record_attempt(
+        program,
+        start,
+        driver,
+        &input_hash,
+        &mut trace,
+        &mut snapshots,
+    );
+    match result {
+        Ok(outcome) => Ok(RecordResult {
+            outcome,
+            trace,
+            snapshots,
+        }),
+        Err(mut error) => {
+            if let Err(trace_error) =
+                trace.append("run_failed", json!({"error": error.to_string()}))
+            {
+                error = RunError::Trace(trace_error);
+            }
+            Err(RecordFailure {
+                error,
+                trace,
+                snapshots,
+            })
+        }
+    }
+}
+
+fn initial_record_failure(error: RunError) -> RecordFailure {
+    RecordFailure {
+        error,
+        trace: Trace::new("record-initialization-failed"),
+        snapshots: Vec::new(),
+    }
+}
+
+fn record_attempt<D: EffectDriver>(
+    program: Program,
+    start: StartRequest,
+    driver: &mut D,
+    input_hash: &str,
+    trace: &mut Trace,
+    snapshots: &mut Vec<MachineSnapshot>,
+) -> Result<RunOutcome, RunError> {
     trace.append(
         "run_header",
         json!({
@@ -69,10 +145,9 @@ pub fn record_run<D: EffectDriver>(
         }),
     )?;
     let mut machine = Machine::start(program, start)?;
-    let mut snapshots = Vec::new();
     loop {
         let step = machine.step();
-        append_audit_events(&mut trace, machine.take_audit_events())?;
+        append_audit_events(trace, machine.take_audit_events())?;
         match step {
             Step::Continue => {}
             Step::Yield(request) => {
@@ -91,22 +166,15 @@ pub fn record_run<D: EffectDriver>(
                 let resolution = driver.resolve(&request, &preview)?;
                 trace.append("effect_resolved", to_value(&resolution)?)?;
                 machine.supply(&resolution)?;
-                append_audit_events(&mut trace, machine.take_audit_events())?;
+                append_audit_events(trace, machine.take_audit_events())?;
                 trace.append("budget_settled", to_value(&resolution.actual_usage)?)?;
             }
             Step::Completed(outcome) => {
                 trace.append("state_committed", to_value(&outcome.state)?)?;
                 trace.append("run_completed", to_value(&outcome)?)?;
-                return Ok(RecordResult {
-                    outcome,
-                    trace,
-                    snapshots,
-                });
+                return Ok(outcome);
             }
-            Step::Failed(error) => {
-                trace.append("run_failed", json!({"error": error.to_string()}))?;
-                return Err(RunError::Machine(error));
-            }
+            Step::Failed(error) => return Err(RunError::Machine(error)),
         }
     }
 }

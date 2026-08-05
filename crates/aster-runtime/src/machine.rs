@@ -48,6 +48,7 @@ pub struct EffectRequest {
 
 /// Typed driver or replay response bound to one request hash.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct EffectResolution {
     pub request_hash: String,
     pub payload: JsonValue,
@@ -97,6 +98,7 @@ enum PendingCompletion {
 
 /// Complete versioned continuation at an instruction/effect boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineSnapshot {
     pub schema_version: u32,
     pub runtime_version: String,
@@ -231,6 +233,7 @@ impl Machine {
     /// Rejects unknown agents/events and malformed typed boundary values.
     pub fn start(program: Program, request: StartRequest) -> Result<Self, MachineError> {
         validate_instant(&request.event_time)?;
+        validate_runtime_grants(&request.capabilities, &program)?;
         let compiled_grants = request
             .capabilities
             .clone()
@@ -1347,6 +1350,27 @@ fn validate_declared_capabilities(
     Ok(())
 }
 
+fn validate_runtime_grants(
+    grants: &CapabilityGrants,
+    program: &Program,
+) -> Result<(), MachineError> {
+    for grant in &grants.grants {
+        let parameters = program
+            .catalog
+            .capabilities
+            .get(&grant.capability)
+            .ok_or(MachineError::UnknownCapabilityGrant)?;
+        if parameters.len() != grant.arguments.len() {
+            return Err(MachineError::InvalidCapabilityGrant);
+        }
+        for (parameter, argument) in parameters.iter().zip(&grant.arguments) {
+            decode_json(argument, &parameter.ty, program)
+                .map_err(|_| MachineError::InvalidCapabilityGrant)?;
+        }
+    }
+    Ok(())
+}
+
 fn initial_state(
     agent: &Agent,
     supplied: &BTreeMap<String, JsonValue>,
@@ -2044,6 +2068,10 @@ pub enum MachineError {
     Authority(String),
     #[error("required capability grant is missing or out of scope")]
     MissingCapability,
+    #[error("capability grant names an undeclared capability")]
+    UnknownCapabilityGrant,
+    #[error("capability grant arguments do not match its declaration")]
+    InvalidCapabilityGrant,
     #[error("capability failure: {0}")]
     Capability(String),
     #[error("serialization failure: {0}")]

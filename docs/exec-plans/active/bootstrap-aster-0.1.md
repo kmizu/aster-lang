@@ -106,6 +106,15 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   atomic failed-handler state, generic secret serialization rejection, and
   fixture actual-usage overflow. Registered runtime/replay/capability/budget/
   internal diagnostic families and remediation text.
+- 2026-08-05: Persisted capability declaration signatures into IR and now
+  reject undeclared, ill-typed, duplicate, or unsupported runtime grant files
+  before admission. All versioned external runtime structures reject unknown
+  fields rather than silently ignoring schema drift.
+- 2026-08-05: Added evidence-bearing record failures. Driver/schema/usage/VM
+  failures now end a valid partial chain with `run_failed`; the CLI atomically
+  persists that trace and prior snapshots. Regression coverage includes
+  actual-usage overflow after exactly one driver call and expired authority
+  before any write call.
 
 ## Discoveries and deviations
 

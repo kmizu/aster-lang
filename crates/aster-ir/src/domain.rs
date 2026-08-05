@@ -9,6 +9,7 @@ pub const IR_SCHEMA_VERSION: u32 = 1;
 
 /// Versioned, deterministic executable ASTER program.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Program {
     /// Persisted schema version.
     pub schema_version: u32,
@@ -137,6 +138,8 @@ pub struct Agent {
 pub struct Catalog {
     /// Non-generic aliases expanded at external decode boundaries.
     pub aliases: BTreeMap<String, TypeSpec>,
+    /// Runtime-grant capability signatures.
+    pub capabilities: BTreeMap<String, Vec<FieldSpec>>,
     /// Record schemas.
     pub records: BTreeMap<String, Vec<FieldSpec>>,
     /// Static prompts.

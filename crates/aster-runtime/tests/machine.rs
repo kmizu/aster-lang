@@ -269,6 +269,27 @@ fn missing_exact_runtime_capability_is_rejected_at_admission() {
 }
 
 #[test]
+fn undeclared_and_ill_typed_runtime_grants_are_rejected() {
+    let base = StartRequest {
+        agent: "A".to_owned(),
+        event: "message".to_owned(),
+        event_id: "evt-001".to_owned(),
+        event_time: "2026-08-05T12:00:00Z".to_owned(),
+        agent_arguments: BTreeMap::new(),
+        payload: json!({"text": "hello"}),
+        state: BTreeMap::new(),
+        capabilities: grants(&[("Unknown", json!("planner"))]),
+    };
+    let result = Machine::start(inference_program(), base.clone());
+    assert!(matches!(result, Err(MachineError::UnknownCapabilityGrant)));
+
+    let mut ill_typed = base;
+    ill_typed.capabilities = grants(&[("ModelUse", json!(7))]);
+    let result = Machine::start(inference_program(), ill_typed);
+    assert!(matches!(result, Err(MachineError::InvalidCapabilityGrant)));
+}
+
+#[test]
 fn model_response_is_decoded_against_the_prompt_schema() {
     let program = inference_program();
     let mut machine = Machine::start(

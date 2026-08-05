@@ -8,6 +8,7 @@ use crate::{CanonicalError, canonical_sha256};
 
 /// One exact runtime-issued capability scope.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityGrant {
     /// Capability declaration identity.
     pub capability: String,
@@ -17,6 +18,7 @@ pub struct CapabilityGrant {
 
 /// Versioned runtime grants loaded only at the external boundary.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct CapabilityGrants {
     /// Grant file schema version.
     pub schema_version: u32,
@@ -35,7 +37,7 @@ impl CapabilityGrants {
             return Err(CapabilityError::SchemaMismatch);
         }
         let fingerprint = canonical_sha256(&self)?;
-        let request_hashes = self
+        let request_hashes: BTreeSet<String> = self
             .grants
             .iter()
             .map(|grant| {
@@ -45,6 +47,9 @@ impl CapabilityGrants {
                 }))
             })
             .collect::<Result<_, _>>()?;
+        if request_hashes.len() != self.grants.len() {
+            return Err(CapabilityError::DuplicateGrant);
+        }
         Ok(CompiledGrants {
             fingerprint,
             request_hashes,
@@ -73,6 +78,9 @@ pub enum CapabilityError {
     /// Canonical hashing failed.
     #[error("capability canonicalization failed")]
     Canonical,
+    /// The same exact grant appeared more than once.
+    #[error("duplicate exact capability grant")]
+    DuplicateGrant,
 }
 
 impl From<CanonicalError> for CapabilityError {

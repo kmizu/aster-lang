@@ -6,6 +6,7 @@ use crate::{CanonicalError, canonical_sha256};
 
 /// One append-only, hash-chained trace record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct TraceEntry {
     /// Trace schema version.
     pub schema_version: u32,

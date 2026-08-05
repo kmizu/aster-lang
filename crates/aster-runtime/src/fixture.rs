@@ -8,6 +8,7 @@ use crate::{EffectKind, EffectRequest, EffectResolution};
 
 /// Versioned deterministic fixture collection.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FixtureSet {
     /// Fixture schema version.
     pub schema_version: u32,
@@ -17,6 +18,7 @@ pub struct FixtureSet {
 
 /// One exact effect kind/identity plus explicit request-field match.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct FixtureEntry {
     /// External effect category.
     pub kind: EffectKind,

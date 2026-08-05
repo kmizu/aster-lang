@@ -4,7 +4,7 @@ use aster_ir::lower;
 use aster_runtime::{
     CapabilityGrant, CapabilityGrants, EffectKind, FixtureDriver, FixtureEntry, FixtureSet,
     ReplayError, RunError, StartRequest, Trace, canonical_json, canonical_sha256, record_run,
-    replay_run,
+    record_run_evidenced, replay_run,
 };
 use aster_semantics::check_source;
 use aster_syntax::SourceFile;
@@ -107,6 +107,52 @@ fn fixture_driver() -> FixtureDriver {
         ],
     })
     .expect("fixtures are valid")
+}
+
+fn direct_start() -> StartRequest {
+    StartRequest {
+        agent: "Writer".to_owned(),
+        event: "message".to_owned(),
+        event_id: "evt-001".to_owned(),
+        event_time: "2026-08-05T12:00:00Z".to_owned(),
+        agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
+        payload: json!("save"),
+        state: BTreeMap::new(),
+        capabilities: CapabilityGrants {
+            schema_version: 1,
+            grants: vec![
+                CapabilityGrant {
+                    capability: "Read".to_owned(),
+                    arguments: vec![json!("user-001")],
+                },
+                CapabilityGrant {
+                    capability: "Write".to_owned(),
+                    arguments: vec![json!("user-001")],
+                },
+            ],
+        },
+    }
+}
+
+fn direct_driver() -> FixtureDriver {
+    FixtureDriver::new(FixtureSet {
+        schema_version: 1,
+        entries: vec![
+            entry(
+                EffectKind::Write,
+                "Store.put",
+                json!({"arguments": {"request_id": "evt-001"}}),
+                json!({"id": "created-001"}),
+            ),
+            entry(
+                EffectKind::Read,
+                "Store.get",
+                json!({"arguments": {"id": "created-001"}}),
+                json!({"id": "created-001"}),
+            ),
+        ],
+    })
+    .expect("fixture is valid")
 }
 
 fn reseal(trace: &mut Trace) {
@@ -231,43 +277,101 @@ fn exhausted_write_budget_rejects_before_driver_invocation() {
         &check_source(&SourceFile::new("zero-write-budget.aster", text)).expect("source checks"),
     )
     .expect("source lowers");
-    let start = StartRequest {
-        agent: "Writer".to_owned(),
-        event: "message".to_owned(),
-        event_id: "evt-001".to_owned(),
-        event_time: "2026-08-05T12:00:00Z".to_owned(),
-        agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
-        payload: json!("save"),
-        state: BTreeMap::new(),
-        capabilities: CapabilityGrants {
-            schema_version: 1,
-            grants: vec![
-                CapabilityGrant {
-                    capability: "Read".to_owned(),
-                    arguments: vec![json!("user-001")],
-                },
-                CapabilityGrant {
-                    capability: "Write".to_owned(),
-                    arguments: vec![json!("user-001")],
-                },
-            ],
-        },
-    };
-    let mut driver = FixtureDriver::new(FixtureSet {
-        schema_version: 1,
-        entries: vec![entry(
-            EffectKind::Write,
-            "Store.put",
-            json!({"arguments": {"request_id": "evt-001"}}),
-            json!({"id": "created-001"}),
-        )],
-    })
-    .expect("fixture is valid");
+    let mut driver = direct_driver();
     assert!(matches!(
-        record_run(program, start, &mut driver),
+        record_run(program, direct_start(), &mut driver),
         Err(RunError::Machine(_))
     ));
     assert_eq!(driver.call_count(EffectKind::Write), 0);
+}
+
+#[test]
+fn expired_intent_rejects_before_write_driver_invocation() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("tests/conformance/pass/direct_allow.aster");
+    let text = std::fs::read_to_string(&path)
+        .expect("fixture is readable")
+        .replacen(
+            "expires_at = event.time",
+            "expires_at = add_seconds(event.time, -1)",
+            1,
+        );
+    let program =
+        lower(&check_source(&SourceFile::new("expired.aster", text)).expect("source checks"))
+            .expect("source lowers");
+    let mut driver = direct_driver();
+    assert!(matches!(
+        record_run(program, direct_start(), &mut driver),
+        Err(RunError::Machine(_))
+    ));
+    assert_eq!(driver.call_count(EffectKind::Write), 0);
+}
+
+#[test]
+fn direct_allow_record_run_never_invokes_approval_driver() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("tests/conformance/pass/direct_allow.aster");
+    let text = std::fs::read_to_string(&path)
+        .expect("fixture is readable")
+        .replacen(
+            "external_writes <= 1;",
+            "external_writes <= 1; money_microunits <= 1;",
+            1,
+        );
+    let program = lower(
+        &check_source(&SourceFile::new(path.display().to_string(), text)).expect("source checks"),
+    )
+    .expect("source lowers");
+    let mut driver = direct_driver();
+    record_run(program, direct_start(), &mut driver).expect("direct run succeeds");
+    assert_eq!(driver.call_count(EffectKind::Approval), 0);
+    assert_eq!(driver.call_count(EffectKind::Write), 1);
+}
+
+#[test]
+fn usage_overflow_failure_is_hash_chained_into_partial_trace() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("tests/conformance/pass/direct_allow.aster");
+    let text = std::fs::read_to_string(&path)
+        .expect("fixture is readable")
+        .replacen(
+            "external_writes <= 1;",
+            "external_writes <= 1; money_microunits <= 1;",
+            1,
+        );
+    let program = lower(
+        &check_source(&SourceFile::new(path.display().to_string(), text)).expect("source checks"),
+    )
+    .expect("source lowers");
+    let mut overflowing = entry(
+        EffectKind::Write,
+        "Store.put",
+        json!({"arguments": {"request_id": "evt-001"}}),
+        json!({"id": "created-001"}),
+    );
+    overflowing
+        .max_usage
+        .insert("money_microunits".to_owned(), 1);
+    overflowing
+        .actual_usage
+        .insert("money_microunits".to_owned(), 2);
+    let mut driver = FixtureDriver::new(FixtureSet {
+        schema_version: 1,
+        entries: vec![overflowing],
+    })
+    .expect("fixture is valid before resolution");
+    let failure = record_run_evidenced(program, direct_start(), &mut driver)
+        .expect_err("actual usage above maximum fails");
+    failure.trace.verify().expect("partial trace remains valid");
+    assert_eq!(
+        failure
+            .trace
+            .entries
+            .last()
+            .map(|entry| entry.kind.as_str()),
+        Some("run_failed")
+    );
+    assert_eq!(driver.call_count(EffectKind::Write), 1);
 }
 
 #[test]
