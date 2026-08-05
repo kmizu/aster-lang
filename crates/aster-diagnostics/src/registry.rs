@@ -229,8 +229,8 @@ fn governance_explanation(code: &str) -> Option<ExplanationText> {
     Some(match code {
         "ASTER-POLICY-4001" => (
             "a policy is not total",
-            "the final source-ordered rule is not otherwise",
-            "add a final deny rule with otherwise",
+            "the policy does not have exactly one otherwise rule in final position",
+            "remove any early otherwise rule and end with one otherwise decision",
         ),
         "ASTER-AFFINE-5001" => (
             "a permit was used after commit consumed it",

@@ -134,8 +134,12 @@ pub struct AuthorityLedger {
 }
 
 impl AuthorityLedger {
-    /// Issues an affine permit cryptographically bound to one proposal.
-    #[must_use]
+    /// Issues an affine permit cryptographically bound to one sealed proposal.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a proposal whose authority-relevant fields no longer match its
+    /// canonical digest.
     pub fn issue(
         &mut self,
         proposal: &Proposal,
@@ -144,7 +148,10 @@ impl AuthorityLedger {
         issued_at: &str,
         expires_at: &str,
         decision_evidence: &str,
-    ) -> Permit {
+    ) -> Result<Permit, AuthorityError> {
+        if proposal.validate().is_err() {
+            return Err(AuthorityError::ProposalMismatch);
+        }
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         let material = format!(
@@ -169,7 +176,7 @@ impl AuthorityLedger {
             decision_evidence: decision_evidence.to_owned(),
         };
         self.issued.insert(id, permit.clone());
-        permit
+        Ok(permit)
     }
 
     /// Atomically validates and consumes a permit before driver invocation.
@@ -184,6 +191,9 @@ impl AuthorityLedger {
         grant_fingerprint: &str,
         now: &str,
     ) -> Result<(), AuthorityError> {
+        if proposal.validate().is_err() {
+            return Err(AuthorityError::ProposalMismatch);
+        }
         if permit.computed_id() != permit.id || self.issued.get(&permit.id) != Some(permit) {
             return Err(AuthorityError::ForgedPermit);
         }

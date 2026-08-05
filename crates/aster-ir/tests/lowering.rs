@@ -31,6 +31,13 @@ fn lowering_has_stable_ids_hash_and_json_round_trip() {
         Program::from_json(&serde_json::to_string(&unknown_nested).expect("mutated IR serializes")),
         Err(ProgramError::SchemaShapeMismatch)
     ));
+    let mut unsupported: serde_json::Value =
+        serde_json::from_str(&json).expect("IR JSON is inspectable");
+    unsupported["schema_version"] = serde_json::json!(2);
+    assert!(matches!(
+        Program::from_json(&serde_json::to_string(&unsupported).expect("mutated IR serializes")),
+        Err(ProgramError::UnsupportedSchema(2))
+    ));
 
     let handler = first
         .handler("Scheduler", "message")

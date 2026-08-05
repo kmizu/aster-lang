@@ -53,6 +53,8 @@ Checked source lowers to instructions with stable identities, explicit locals,
 branches, pending state updates, and effect requests. Pure VM stepping performs
 no I/O. The runtime's `EffectDriver` interface is the only external effect
 boundary; AST, checker, policy evaluation, lowering, and VM core cannot call it.
+Lowering gives each lexical `let` and pattern payload binding a unique runtime
+local identity, preserving source shadowing across nested blocks and branches.
 The versioned program uses deterministically keyed catalogs and a SHA-256
 content hash. Its pure-expression representation cannot encode model, tool,
 authorization, commit, or reconciliation effects; those remain distinct
@@ -60,8 +62,10 @@ instructions even when nested in a larger source expression.
 
 Before yielding to a driver, the runtime resolves and verifies an exact grant,
 reserves the declared budget, and writes a snapshot. It then validates and
-settles the resolution. State mutations accumulate in a transaction and publish
-atomically only after successful handler completion.
+settles the resolution. At permit issuance and immediately before a write it
+revalidates the proposal seal, then consumes the matching issued permit. State
+mutations accumulate in a transaction and publish atomically only after
+successful handler completion.
 
 ## Recording, replay, and resume
 

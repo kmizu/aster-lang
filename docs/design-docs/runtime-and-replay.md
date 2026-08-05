@@ -11,6 +11,11 @@ contains before/reserved/actual/released/after ledgers and is independently
 recomputed during replay. State updates remain pending until successful handler
 completion.
 
+Source lexical bindings are alpha-renamed while lowering, so same-named locals
+in nested blocks and match arms occupy distinct serializable VM entries. Pure
+metadata uses the same scoped `if` and `match` evaluation without admitting an
+effect instruction.
+
 Each JSON Lines trace entry hashes its schema, run, sequence, kind, payload, and
 previous hash using recursively sorted canonical JSON and SHA-256. The run
 header binds normalized program, input, initial state, and capability grants.

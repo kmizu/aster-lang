@@ -14,9 +14,9 @@ driver.
 
 ## Status and scope
 
-ASTER 0.1 is an implemented experimental vertical slice and is not
+ASTER 0.1 is an implemented experimental reference processor and is not
 production-ready. The 0.1 scope is one-file programs, non-generic user types,
-finite pure computation, explicit
+finite, lexically scoped pure computation, explicit
 model/read/approval/write effects, fixture-backed drivers, transactional state,
 hash-chained traces, snapshots, resume, and semantic replay.
 

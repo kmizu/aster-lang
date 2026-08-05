@@ -187,7 +187,7 @@ tool Store.put(owner: Text, decision: Decision, request_id: Text) -> Unit {
   idempotency request_id;
 }
 policy Direct(proposal: Proposal<Store.put>) {
-  allow when permitted(proposal.args.decision);
+  allow when permitted(proposal.args.decision) && (match proposal.args.decision { Decision.Yes => true, Decision.No => false });
   deny "denied" otherwise;
 }
 agent Writer(owner: Text) requires [Write(scope = "store", owner = owner)] {
@@ -239,6 +239,64 @@ agent Writer(owner: Text) requires [Write(scope = "store", owner = owner)] {
 }
 
 #[test]
+fn stateless_authorization_executes_inside_a_flow_frame() {
+    let source = SourceFile::new(
+        "flow-authorization.aster",
+        r#"module flow_authorization;
+capability Write(scope: Text);
+tool Store.put(request_id: Text) -> Unit {
+  mode write;
+  capability Write("store");
+  sensitivity private;
+  risk irreversible;
+  idempotency request_id;
+}
+policy Direct(proposal: Proposal<Store.put>) { allow when true; deny "no" otherwise; }
+flow save(id: Text, purpose: Intent<Save>) -> Result<Unit, Error> uses [Write("store")] {
+  let proposal = propose Store.put(id) for purpose;
+  let permit = (authorize proposal using Direct)?;
+  let receipt = (commit proposal with permit)?;
+  return Ok(Unit);
+}
+agent Worker() requires [Write("store")] {
+  state {}
+  budget per_event { external_writes <= 1; }
+  on message(msg: Incoming<Unit>) -> Result<Unit, Error> {
+    let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
+    return save(event.id, purpose);
+  }
+}
+"#,
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "Worker".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::new(),
+            payload: JsonValue::Null,
+            state: BTreeMap::new(),
+            capabilities: grants(&[("Write", json!("store"))]),
+        },
+    )
+    .expect("machine starts");
+
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(effect) => {
+                assert_eq!(effect.kind, EffectKind::Write);
+                break;
+            }
+            other => panic!("expected flow write, got {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn accepted_pure_constructs_execute_through_calls_and_state_update() {
     let source = SourceFile::new(
         "pure-constructs.aster",
@@ -248,6 +306,13 @@ enum Choice { Add(Int), Skip }
 fn recover(value: Int) -> Int {
   let result: Result<Int, Int> = Err(value);
   return match result { Ok(found) => found, Err(error) => error + 1 };
+}
+fn scoped(outer: Choice, inner: Choice) -> Int {
+  return match outer { Choice.Add(value) => (match inner { Choice.Add(value) => value, Choice.Skip => 0 }) + value, Choice.Skip => 0 };
+}
+fn block_shadow(value: Int) -> Int {
+  let branch = if true { let value = 2; value; } else { 0; };
+  return branch + value;
 }
 fn difference(left: Int, right: Int) -> Int { return left - right; }
 fn compute(values: List<Int>, choice: Choice, time: Instant) -> Result<Summary, Error> {
@@ -259,10 +324,10 @@ fn compute(values: List<Int>, choice: Choice, time: Instant) -> Result<Summary, 
   let sign = if true { 1; } else { -1; };
   require contains(values, head);
   require subset([head], values);
-  return Ok(Summary { score = (from_result + adjustment) * sign + recover(4) + difference(right = 3, left = 10), valid = !false && (head == from_result), later = add_seconds(time, 60) });
+  return Ok(Summary { score = (from_result + adjustment) * sign + recover(4) + difference(right = 3, left = 10) + scoped(Choice.Add(10), Choice.Add(2)) + block_shadow(10), valid = !false && (head == from_result), later = add_seconds(time, 60) });
 }
 agent Worker() requires [] {
-  state { score: Int = 0; valid: Bool = false; later: Instant = event.time; }
+  state { score: Int = 0; valid: Bool = false; later: Instant = event.time; seed: Int = if true { let value = 1; value + 1; } else { 0; }; }
   budget per_event {}
   on message(msg: Incoming<Int>) -> Result<Unit, Error> {
     let summary = (compute([msg.value, 2], Choice.Add(3), event.time))?;
@@ -292,9 +357,10 @@ agent Worker() requires [] {
         match machine.step() {
             Step::Continue => {}
             Step::Completed(outcome) => {
-                assert_eq!(outcome.state["score"], json!(57));
+                assert_eq!(outcome.state["score"], json!(81));
                 assert_eq!(outcome.state["valid"], json!(true));
                 assert_eq!(outcome.state["later"], json!("2026-08-05T12:01:00Z"));
+                assert_eq!(outcome.state["seed"], json!(2));
                 break;
             }
             Step::Yield(effect) => panic!("pure program yielded {effect:?}"),
@@ -404,7 +470,10 @@ fn meeting_scheduler_runs_full_approval_and_reconciliation_path() {
                     .expect("effect resolves");
             }
             Step::Completed(outcome) => {
-                assert_eq!(outcome.state["last_event"], json!({"id": "event-001"}));
+                assert_eq!(
+                    outcome.state["last_event"],
+                    json!({"some": {"id": "event-001"}})
+                );
                 break;
             }
             Step::Failed(error) => panic!("machine failed: {error}"),
@@ -461,6 +530,15 @@ fn machine_yields_resumes_and_round_trips_pending_snapshot() {
             &serde_json::to_string(&unknown_nested).expect("mutated snapshot serializes")
         ),
         Err(MachineError::Serialization(_))
+    ));
+    let mut unsupported: JsonValue =
+        serde_json::from_str(&json).expect("snapshot JSON is inspectable");
+    unsupported["schema_version"] = json!(2);
+    assert!(matches!(
+        MachineSnapshot::from_json(
+            &serde_json::to_string(&unsupported).expect("mutated snapshot serializes")
+        ),
+        Err(MachineError::SnapshotSchemaMismatch)
     ));
     let snapshot = MachineSnapshot::from_json(&json).expect("snapshot validates");
     let mut resumed = Machine::restore(program, snapshot).expect("snapshot restores");
@@ -533,10 +611,20 @@ fn undeclared_and_ill_typed_runtime_grants_are_rejected() {
     let result = Machine::start(inference_program(), base.clone());
     assert!(matches!(result, Err(MachineError::UnknownCapabilityGrant)));
 
-    let mut ill_typed = base;
+    let mut ill_typed = base.clone();
     ill_typed.capabilities = grants(&[("ModelUse", json!(7))]);
     let result = Machine::start(inference_program(), ill_typed);
     assert!(matches!(result, Err(MachineError::InvalidCapabilityGrant)));
+
+    let mut duplicate = base;
+    duplicate.capabilities = grants(&[
+        ("ModelUse", json!("planner")),
+        ("ModelUse", json!("planner")),
+    ]);
+    assert!(matches!(
+        Machine::start(inference_program(), duplicate),
+        Err(MachineError::Capability(_))
+    ));
 }
 
 #[test]
@@ -574,6 +662,27 @@ fn model_response_is_decoded_against_the_prompt_schema() {
 }
 
 #[test]
+fn agent_arguments_are_an_exact_declared_object() {
+    let mut request = StartRequest {
+        agent: "A".to_owned(),
+        event: "message".to_owned(),
+        event_id: "evt-001".to_owned(),
+        event_time: "2026-08-05T12:00:00Z".to_owned(),
+        agent_arguments: BTreeMap::from([("unexpected".to_owned(), json!(true))]),
+        payload: json!({"text": "hello"}),
+        state: BTreeMap::new(),
+        capabilities: grants(&[("ModelUse", json!("planner"))]),
+    };
+
+    assert_eq!(
+        Machine::start(inference_program(), request.clone()).err(),
+        Some(MachineError::UnknownAgentArgument)
+    );
+    request.agent_arguments.clear();
+    assert!(Machine::start(inference_program(), request).is_ok());
+}
+
+#[test]
 fn tool_response_is_decoded_against_the_declared_result_schema() {
     let program = checked_program("tests/conformance/pass/direct_allow.aster");
     let mut machine = Machine::start(
@@ -605,6 +714,127 @@ fn tool_response_is_decoded_against_the_declared_result_schema() {
             actual_usage: BTreeMap::new(),
         }),
         Err(MachineError::TypeMismatch("Item".to_owned()))
+    );
+}
+
+fn sum_boundaries_program() -> aster_ir::Program {
+    let source = SourceFile::new(
+        "sum-boundaries.aster",
+        r#"module sum_boundaries;
+type Payload = { error: Text };
+capability Read(scope: Text);
+tool Remote.result() -> Result<Payload, Text> {
+  mode read;
+  capability Read("remote");
+  sensitivity private;
+}
+tool Remote.option() -> Option<Unit> {
+  mode read;
+  capability Read("remote");
+  sensitivity private;
+}
+agent Worker() requires [Read("remote")] {
+  state {
+    outcome: Result<Payload, Text> = Err("unset");
+    optional: Option<Unit> = None;
+  }
+  budget per_event { external_reads <= 2; }
+  on message(msg: Incoming<Unit>) -> Result<Unit, Error> {
+    let outcome = (observe Remote.result())?;
+    let optional = (observe Remote.option())?;
+    update state { outcome = outcome.value; optional = optional.value; }
+    return Ok(Unit);
+  }
+}
+"#,
+    );
+    lower(&check_source(&source).expect("source checks")).expect("source lowers")
+}
+
+#[test]
+fn option_and_result_boundary_encodings_are_unambiguous() {
+    let program = sum_boundaries_program();
+    let cases = [
+        (
+            [json!({"ok": {"error": "legit"}}), json!({"some": null})],
+            json!({"ok": {"error": "legit"}}),
+            json!({"some": null}),
+        ),
+        (
+            [json!({"error": "bad"}), JsonValue::Null],
+            json!({"error": "bad"}),
+            JsonValue::Null,
+        ),
+    ];
+
+    for (resolutions, expected_result, expected_option) in cases {
+        let mut machine = Machine::start(
+            program.clone(),
+            StartRequest {
+                agent: "Worker".to_owned(),
+                event: "message".to_owned(),
+                event_id: "evt-001".to_owned(),
+                event_time: "2026-08-05T12:00:00Z".to_owned(),
+                agent_arguments: BTreeMap::new(),
+                payload: JsonValue::Null,
+                state: BTreeMap::new(),
+                capabilities: grants(&[("Read", json!("remote"))]),
+            },
+        )
+        .expect("machine starts");
+        let mut resolution = resolutions.into_iter();
+
+        loop {
+            match machine.step() {
+                Step::Continue => {}
+                Step::Yield(effect) => machine
+                    .supply(&EffectResolution {
+                        request_hash: effect.request_hash,
+                        payload: resolution.next().expect("one payload per read"),
+                        actual_usage: BTreeMap::new(),
+                    })
+                    .expect("sum boundary payload decodes"),
+                Step::Completed(outcome) => {
+                    assert_eq!(outcome.state["outcome"], expected_result);
+                    assert_eq!(outcome.state["optional"], expected_option);
+                    assert!(resolution.next().is_none());
+                    break;
+                }
+                Step::Failed(error) => panic!("sum boundary program failed: {error}"),
+            }
+        }
+    }
+
+    let start_with_state = |state| {
+        Machine::start(
+            program.clone(),
+            StartRequest {
+                agent: "Worker".to_owned(),
+                event: "message".to_owned(),
+                event_id: "evt-001".to_owned(),
+                event_time: "2026-08-05T12:00:00Z".to_owned(),
+                agent_arguments: BTreeMap::new(),
+                payload: JsonValue::Null,
+                state,
+                capabilities: grants(&[("Read", json!("remote"))]),
+            },
+        )
+    };
+    assert_eq!(
+        start_with_state(BTreeMap::from([(
+            "outcome".to_owned(),
+            json!({"ok": {"error": "legit"}, "error": "ambiguous"}),
+        )]))
+        .err(),
+        Some(MachineError::TypeMismatch("Result".to_owned()))
+    );
+    assert_eq!(
+        start_with_state(BTreeMap::from([(
+            "optional".to_owned(),
+            json!({"some": null, "unexpected": true}),
+        )]))
+        .err(),
+        Some(MachineError::TypeMismatch("Option".to_owned()))
     );
 }
 

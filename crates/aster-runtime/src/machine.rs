@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aster_ir::{
     Agent, CapabilitySpec, FieldSpec, InstructionKind, MatchTarget, NamedExpression, NamedValue,
-    PatternSpec, PolicyDecisionSpec, Program, PureExpression, TypeSpec, ValueId,
+    PatternSpec, PolicyDecisionSpec, Program, PureBlockSpec, PureExpression, PureStatementSpec,
+    TypeSpec, ValueId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -285,9 +286,13 @@ impl Machine {
             .agents
             .get(&request.agent)
             .ok_or(MachineError::UnknownAgent)?;
+        validate_agent_argument_names(agent, &request.agent_arguments)?;
         let routine = program
             .handler(&request.agent, &request.event)
             .ok_or(MachineError::UnknownEvent)?;
+        let [handler_parameter] = routine.parameters.as_slice() else {
+            return Err(MachineError::MissingHandlerParameter);
+        };
         let mut locals = BTreeMap::new();
         for parameter in &agent.parameters {
             let value = request
@@ -299,10 +304,6 @@ impl Machine {
                 decode_json(value, &parameter.ty, &program)?,
             );
         }
-        let handler_parameter = routine
-            .parameters
-            .first()
-            .ok_or(MachineError::MissingHandlerParameter)?;
         locals.insert(
             handler_parameter.name.clone(),
             decode_json(&request.payload, &handler_parameter.ty, &program)?,
@@ -548,14 +549,18 @@ impl Machine {
                     .and_then(JsonValue::as_bool)
                     .ok_or_else(|| MachineError::TypeMismatch("approval response".to_owned()))?;
                 if approved {
-                    let permit = self.snapshot.authority.issue(
-                        &proposal,
-                        &policy,
-                        &self.snapshot.grant_fingerprint,
-                        &self.snapshot.event_time,
-                        &expires_at,
-                        "human_approval",
-                    );
+                    let permit = self
+                        .snapshot
+                        .authority
+                        .issue(
+                            &proposal,
+                            &policy,
+                            &self.snapshot.grant_fingerprint,
+                            &self.snapshot.event_time,
+                            &expires_at,
+                            "human_approval",
+                        )
+                        .map_err(|error| MachineError::Authority(error.to_string()))?;
                     self.audit_events.push(AuditEvent {
                         kind: "permit_issued".to_owned(),
                         payload: json!({
@@ -1082,14 +1087,18 @@ impl Machine {
         let decision = self.policy_decision(&policy, &proposal)?;
         match decision {
             PolicyRuntimeDecision::Allow => {
-                let permit = self.snapshot.authority.issue(
-                    &proposal,
-                    &policy,
-                    &self.snapshot.grant_fingerprint,
-                    &self.snapshot.event_time,
-                    &proposal.intent.expires_at,
-                    "direct_allow",
-                );
+                let permit = self
+                    .snapshot
+                    .authority
+                    .issue(
+                        &proposal,
+                        &policy,
+                        &self.snapshot.grant_fingerprint,
+                        &self.snapshot.event_time,
+                        &proposal.intent.expires_at,
+                        "direct_allow",
+                    )
+                    .map_err(|error| MachineError::Authority(error.to_string()))?;
                 self.audit_events.push(AuditEvent {
                     kind: "policy_decision".to_owned(),
                     payload: json!({
@@ -1369,16 +1378,21 @@ impl Machine {
             .policies
             .get(name)
             .ok_or(MachineError::UnknownPolicy)?;
-        let state = self
-            .frame()?
-            .locals
-            .get("self")
-            .cloned()
-            .ok_or(MachineError::UnknownValue)?;
+        let mut values = vec![RuntimeValue::Proposal(proposal.clone())];
+        if policy.parameters.len() == 2 {
+            values.push(
+                self.snapshot
+                    .frames
+                    .first()
+                    .and_then(|frame| frame.locals.get("self"))
+                    .cloned()
+                    .ok_or(MachineError::UnknownValue)?,
+            );
+        }
         let locals: BTreeMap<_, _> = policy
             .parameters
             .iter()
-            .zip([RuntimeValue::Proposal(proposal.clone()), state])
+            .zip(values)
             .map(|(parameter, value)| (parameter.name.clone(), value))
             .collect();
         let slots = BTreeMap::new();
@@ -1564,6 +1578,22 @@ fn validate_runtime_grants(
     Ok(())
 }
 
+fn validate_agent_argument_names(
+    agent: &Agent,
+    arguments: &BTreeMap<String, JsonValue>,
+) -> Result<(), MachineError> {
+    if arguments.keys().all(|name| {
+        agent
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == *name)
+    }) {
+        Ok(())
+    } else {
+        Err(MachineError::UnknownAgentArgument)
+    }
+}
+
 fn initial_state(
     agent: &Agent,
     supplied: &BTreeMap<String, JsonValue>,
@@ -1670,7 +1700,58 @@ fn eval_expression(
                 .collect::<Result<Vec<_>, _>>()?;
             eval_call(function, values, program)
         }
+        PureExpression::If {
+            condition,
+            then_block,
+            else_block,
+        } => match eval_expression(condition, locals, slots, program)? {
+            RuntimeValue::Bool(true) => eval_pure_block(then_block, locals, slots, program),
+            RuntimeValue::Bool(false) => eval_pure_block(else_block, locals, slots, program),
+            _ => Err(MachineError::TypeMismatch("if condition".to_owned())),
+        },
+        PureExpression::Match { value, arms } => {
+            let value = eval_expression(value, locals, slots, program)?;
+            let (arm, binding) = arms
+                .iter()
+                .find_map(|arm| match_pattern(&value, &arm.pattern).map(|binding| (arm, binding)))
+                .ok_or(MachineError::NonExhaustiveMatch)?;
+            let mut branch_locals = locals.clone();
+            if let PatternBinding::Bound(name, value) = binding {
+                branch_locals.insert(name, *value);
+            }
+            eval_expression(&arm.value, &branch_locals, slots, program)
+        }
     }
+}
+
+fn eval_pure_block(
+    block: &PureBlockSpec,
+    outer_locals: &BTreeMap<String, RuntimeValue>,
+    slots: &BTreeMap<ValueId, RuntimeValue>,
+    program: &Program,
+) -> Result<RuntimeValue, MachineError> {
+    let mut locals = outer_locals.clone();
+    let mut result = RuntimeValue::Unit;
+    for statement in &block.statements {
+        match statement {
+            PureStatementSpec::Let { name, value } => {
+                let value = eval_expression(value, &locals, slots, program)?;
+                locals.insert(name.clone(), value);
+                result = RuntimeValue::Unit;
+            }
+            PureStatementSpec::Require { condition } => {
+                if eval_expression(condition, &locals, slots, program)? != RuntimeValue::Bool(true)
+                {
+                    return Err(MachineError::RequirementFailed);
+                }
+                result = RuntimeValue::Unit;
+            }
+            PureStatementSpec::Expression { value } => {
+                result = eval_expression(value, &locals, slots, program)?;
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn eval_named_expressions(
@@ -2144,25 +2225,9 @@ fn decode_json(
             value: Box::new(decode_json(value, inner, program)?),
             provenance: boundary_provenance("untrusted", value, ty)?,
         })),
-        ("Result", [ok, error]) => {
-            if let Some(object) = value.as_object()
-                && object.len() == 1
-                && let Some(error_value) = object.get("error")
-            {
-                return Ok(RuntimeValue::Result(Err(Box::new(decode_json(
-                    error_value,
-                    error,
-                    program,
-                )?))));
-            }
-            Ok(RuntimeValue::Result(Ok(Box::new(decode_json(
-                value, ok, program,
-            )?))))
-        }
+        ("Result", [ok, error]) => decode_result_json(value, ok, error, program),
         ("Option", [_]) if value.is_null() => Ok(RuntimeValue::Option(None)),
-        ("Option", [inner]) => Ok(RuntimeValue::Option(Some(Box::new(decode_json(
-            value, inner, program,
-        )?)))),
+        ("Option", [inner]) => decode_some_json(value, inner, program),
         ("List", [inner]) => value
             .as_array()
             .ok_or_else(|| MachineError::TypeMismatch("List".to_owned()))?
@@ -2223,6 +2288,46 @@ fn decode_json(
         }
         _ => Err(MachineError::TypeMismatch(ty.name.clone())),
     }
+}
+
+fn decode_result_json(
+    value: &JsonValue,
+    ok: &TypeSpec,
+    error: &TypeSpec,
+    program: &Program,
+) -> Result<RuntimeValue, MachineError> {
+    let object = value
+        .as_object()
+        .filter(|object| object.len() == 1)
+        .ok_or_else(|| MachineError::TypeMismatch("Result".to_owned()))?;
+    if let Some(ok_value) = object.get("ok") {
+        Ok(RuntimeValue::Result(Ok(Box::new(decode_json(
+            ok_value, ok, program,
+        )?))))
+    } else if let Some(error_value) = object.get("error") {
+        Ok(RuntimeValue::Result(Err(Box::new(decode_json(
+            error_value,
+            error,
+            program,
+        )?))))
+    } else {
+        Err(MachineError::TypeMismatch("Result".to_owned()))
+    }
+}
+
+fn decode_some_json(
+    value: &JsonValue,
+    inner: &TypeSpec,
+    program: &Program,
+) -> Result<RuntimeValue, MachineError> {
+    let some = value
+        .as_object()
+        .filter(|object| object.len() == 1)
+        .and_then(|object| object.get("some"))
+        .ok_or_else(|| MachineError::TypeMismatch("Option".to_owned()))?;
+    Ok(RuntimeValue::Option(Some(Box::new(decode_json(
+        some, inner, program,
+    )?))))
 }
 
 fn boundary_provenance(
@@ -2332,9 +2437,8 @@ fn runtime_to_json(value: &RuntimeValue) -> Result<JsonValue, MachineError> {
             }
             Ok(JsonValue::Object(object))
         }
-        RuntimeValue::Option(Some(value)) | RuntimeValue::Result(Ok(value)) => {
-            runtime_to_json(value)
-        }
+        RuntimeValue::Option(Some(value)) => Ok(json!({"some": runtime_to_json(value)?})),
+        RuntimeValue::Result(Ok(value)) => Ok(json!({"ok": runtime_to_json(value)?})),
         RuntimeValue::Incoming(ProvenancedValue { value, .. })
         | RuntimeValue::Untrusted(ProvenancedValue { value, .. })
         | RuntimeValue::Candidate(ProvenancedValue { value, .. })
@@ -2469,6 +2573,8 @@ pub enum MachineError {
     MissingHandlerParameter,
     #[error("missing input `{0}`")]
     MissingInput(String),
+    #[error("agent arguments contain an unknown field")]
+    UnknownAgentArgument,
     #[error("initial state contains an unknown field")]
     UnknownStateField,
     #[error("type mismatch: {0}")]

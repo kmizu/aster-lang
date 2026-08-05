@@ -49,6 +49,7 @@ pub(crate) struct CheckContext {
     pub(crate) pure: bool,
     pub(crate) allowed_capabilities: BTreeSet<String>,
     pub(crate) return_type: Type,
+    pub(crate) return_allowed: bool,
     pub(crate) agent: Option<String>,
 }
 
@@ -104,6 +105,12 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
             }
             StatementKind::Return { value } => {
                 let actual = self.check_expression(value, environment, context);
+                if !context.return_allowed {
+                    self.type_mismatch(
+                        "return is not allowed inside a metadata expression",
+                        &value.span,
+                    );
+                }
                 self.expect_type(&context.return_type, &actual, &value.span);
                 if self.is_affine(&actual, &mut BTreeSet::new()) {
                     mark_expression_moved(value, environment);
@@ -619,6 +626,12 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
             return self.model.resolve_type(&flow.return_type);
         }
         if let Some((enum_name, payload)) = self.model.enum_variant(&name) {
+            if arguments.iter().any(|argument| argument.name.is_some()) {
+                self.type_mismatch(
+                    "enum constructors accept positional arguments only",
+                    &callee.span,
+                );
+            }
             let values = arguments
                 .iter()
                 .map(|argument| self.check_expression(&argument.value, environment, context))
@@ -643,6 +656,9 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
         context: &CheckContext,
         span: &Span,
     ) -> Type {
+        if arguments.iter().any(|argument| argument.name.is_some()) {
+            self.type_mismatch("built-ins accept positional arguments only", span);
+        }
         let values: Vec<_> = arguments
             .iter()
             .map(|argument| self.check_expression(&argument.value, environment, context))
@@ -691,7 +707,10 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
             ("Some", [inner]) => Type::Option(Box::new(inner.clone())),
             ("Ok", [inner]) => Type::Result(Box::new(inner.clone()), Box::new(Type::Unknown)),
             ("Err", [error]) => Type::Result(Box::new(Type::Unknown), Box::new(error.clone())),
-            ("Human", [_]) => Type::Text,
+            ("Human", [principal]) => {
+                self.expect_type(&Type::Text, principal, span);
+                Type::Text
+            }
             _ if matches!(
                 name,
                 "len"
@@ -1059,6 +1078,17 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
                 let expected = self.model.resolve_type(&parameter.ty);
                 self.expect_type(&expected, &Type::Proposal(action.clone()), &proposal.span);
             }
+            if let Some(parameter) = declaration.parameters.get(1) {
+                if let Some(agent) = &context.agent {
+                    let expected = self.model.resolve_type(&parameter.ty);
+                    self.expect_type(&expected, &Type::AgentState(agent.clone()), &proposal.span);
+                } else {
+                    self.type_mismatch(
+                        "a stateful policy can be authorized only in its matching agent handler",
+                        &proposal.span,
+                    );
+                }
+            }
         } else {
             self.unknown_reference("policy", policy);
         }
@@ -1375,7 +1405,7 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
     }
 
     pub(crate) fn expect_type(&mut self, expected: &Type, actual: &Type, span: &Span) {
-        if actual.contains_candidate() && !matches!(expected, Type::Candidate(_)) {
+        if self.model.contains_candidate(actual) && !matches!(expected, Type::Candidate(_)) {
             self.diagnostics.push(
                 Diagnostic::error(
                     KnownDiagnosticCode::CandidateBeforeValidation.into(),

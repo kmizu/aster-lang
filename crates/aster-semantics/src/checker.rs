@@ -77,6 +77,8 @@ pub fn check(module: Module) -> Result<CheckedProgram, Vec<Diagnostic>> {
     check_duplicate_declarations(&module, &mut diagnostics);
     check_type_well_formedness(&module, &model, &mut diagnostics);
     check_secret_type_placement(&module, &model, &mut diagnostics);
+    check_candidate_type_placement(&module, &model, &mut diagnostics);
+    check_boundary_type_placement(&module, &model, &mut diagnostics);
     check_capability_requests(&module, &model, &mut diagnostics);
     check_declaration_metadata(&module, &model, &mut diagnostics);
     check_recursion(&module, &mut diagnostics);
@@ -247,6 +249,194 @@ fn check_secret_type_placement(
     }
 }
 
+fn check_candidate_type_placement(
+    module: &Module,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for declaration in &module.declarations {
+        match &declaration.kind {
+            DeclarationKind::Capability(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Prompt(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+                reject_candidate_boundary(&value.result_type, model, diagnostics);
+            }
+            DeclarationKind::Validator(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+            }
+            DeclarationKind::Tool(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+                reject_candidate_boundary(&value.return_type, model, diagnostics);
+            }
+            DeclarationKind::Agent(value) => {
+                reject_candidate_parameters(&value.parameters, model, diagnostics);
+                for field in &value.state {
+                    reject_candidate_boundary(&field.ty, model, diagnostics);
+                }
+                for handler in &value.handlers {
+                    reject_candidate_parameters(&handler.parameters, model, diagnostics);
+                    reject_candidate_boundary(&handler.return_type, model, diagnostics);
+                }
+            }
+            DeclarationKind::Type(_)
+            | DeclarationKind::Enum(_)
+            | DeclarationKind::Function(_)
+            | DeclarationKind::Flow(_)
+            | DeclarationKind::Policy(_) => {}
+        }
+    }
+}
+
+fn check_boundary_type_placement(
+    module: &Module,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for declaration in &module.declarations {
+        match &declaration.kind {
+            DeclarationKind::Capability(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_plain_boundary_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+            }
+            DeclarationKind::Prompt(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_model_input_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+                reject_invalid_boundary_type(
+                    &value.result_type,
+                    model.is_plain_boundary_data(&model.resolve_type(&value.result_type)),
+                    model,
+                    diagnostics,
+                );
+            }
+            DeclarationKind::Validator(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_plain_boundary_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+            }
+            DeclarationKind::Tool(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_tool_argument_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+                reject_invalid_boundary_type(
+                    &value.return_type,
+                    model.is_plain_boundary_data(&model.resolve_type(&value.return_type)),
+                    model,
+                    diagnostics,
+                );
+            }
+            DeclarationKind::Agent(value) => {
+                for parameter in &value.parameters {
+                    reject_invalid_boundary_type(
+                        &parameter.ty,
+                        model.is_external_input_data(&model.resolve_type(&parameter.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+                for field in &value.state {
+                    reject_invalid_boundary_type(
+                        &field.ty,
+                        model.is_plain_boundary_data(&model.resolve_type(&field.ty)),
+                        model,
+                        diagnostics,
+                    );
+                }
+                for handler in &value.handlers {
+                    for parameter in &handler.parameters {
+                        reject_invalid_boundary_type(
+                            &parameter.ty,
+                            model.is_external_input_data(&model.resolve_type(&parameter.ty)),
+                            model,
+                            diagnostics,
+                        );
+                    }
+                    reject_invalid_boundary_type(
+                        &handler.return_type,
+                        model.is_plain_boundary_data(&model.resolve_type(&handler.return_type)),
+                        model,
+                        diagnostics,
+                    );
+                }
+            }
+            DeclarationKind::Type(_)
+            | DeclarationKind::Enum(_)
+            | DeclarationKind::Function(_)
+            | DeclarationKind::Flow(_)
+            | DeclarationKind::Policy(_) => {}
+        }
+    }
+}
+
+fn reject_invalid_boundary_type(
+    reference: &TypeReference,
+    valid: bool,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let ty = model.resolve_type(reference);
+    if !valid && !model.contains_candidate(&ty) && !model.contains_secret(&ty) {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                "privileged runtime wrappers cannot cross this JSON boundary",
+                reference.span.clone(),
+            )
+            .with_help("use ordinary declared data or a wrapper admitted by this boundary"),
+        );
+    }
+}
+
+fn reject_candidate_parameters(
+    parameters: &[aster_syntax::Parameter],
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for parameter in parameters {
+        reject_candidate_boundary(&parameter.ty, model, diagnostics);
+    }
+}
+
+fn reject_candidate_boundary(
+    reference: &TypeReference,
+    model: &Model<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if model.contains_candidate(&model.resolve_type(reference)) {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::CandidateBeforeValidation.into(),
+                "Candidate values cannot cross external or persistent boundaries",
+                reference.span.clone(),
+            )
+            .with_help("validate the candidate and pass Checked<T> or ordinary data instead"),
+        );
+    }
+}
+
 fn reject_secret_parameters(
     parameters: &[aster_syntax::Parameter],
     model: &Model<'_>,
@@ -373,31 +563,44 @@ fn check_type_reference(
         );
         return;
     }
-    if !matches!(
+    if matches!(
         name.as_str(),
         "Intent" | "Proposal" | "Permit" | "Receipt" | "Reconciled"
     ) {
-        for argument in &reference.arguments {
-            check_type_reference(argument, model, diagnostics);
-        }
-    } else if matches!(
-        name.as_str(),
-        "Proposal" | "Permit" | "Receipt" | "Reconciled"
-    ) {
-        let action = reference.arguments[0].path.as_string();
-        if model
-            .tools
-            .get(&action)
-            .is_none_or(|tool| tool.metadata.mode != Some(ToolMode::Write))
-        {
+        let symbol = &reference.arguments[0];
+        if !symbol.arguments.is_empty() {
             diagnostics.push(
                 Diagnostic::error(
-                    KnownDiagnosticCode::UnknownName.into(),
-                    format!("governance action `{action}` is not a declared write tool"),
-                    reference.arguments[0].span.clone(),
+                    KnownDiagnosticCode::TypeMismatch.into(),
+                    "governance type arguments must be plain symbols",
+                    symbol.span.clone(),
                 )
-                .with_help("use the path of a declared write-mode tool"),
+                .with_help("remove type arguments from the intent purpose or write action"),
             );
+        }
+        if matches!(
+            name.as_str(),
+            "Proposal" | "Permit" | "Receipt" | "Reconciled"
+        ) {
+            let action = symbol.path.as_string();
+            if model
+                .tools
+                .get(&action)
+                .is_none_or(|tool| tool.metadata.mode != Some(ToolMode::Write))
+            {
+                diagnostics.push(
+                    Diagnostic::error(
+                        KnownDiagnosticCode::UnknownName.into(),
+                        format!("governance action `{action}` is not a declared write tool"),
+                        symbol.span.clone(),
+                    )
+                    .with_help("use the path of a declared write-mode tool"),
+                );
+            }
+        }
+    } else {
+        for argument in &reference.arguments {
+            check_type_reference(argument, model, diagnostics);
         }
     }
 }
@@ -593,29 +796,43 @@ fn check_declaration_metadata(
             DeclarationKind::Tool(tool) => {
                 check_tool_metadata(tool, &declaration.span, model, diagnostics);
             }
-            DeclarationKind::Policy(policy)
-                if policy
-                    .rules
-                    .last()
-                    .is_none_or(|rule| rule.condition.is_some()) =>
-            {
-                diagnostics.push(
-                    Diagnostic::error(
-                        KnownDiagnosticCode::NonTotalPolicy.into(),
-                        "policy has no final otherwise rule",
-                        declaration.span.clone(),
-                    )
-                    .with_help("end the policy with an `otherwise` decision"),
-                );
-                check_policy_signature(policy, &declaration.span, model, diagnostics);
-            }
             DeclarationKind::Policy(policy) => {
                 check_policy_signature(policy, &declaration.span, model, diagnostics);
+                check_policy_totality(policy, &declaration.span, diagnostics);
             }
-            DeclarationKind::Agent(agent) => check_agent_metadata(agent, model, diagnostics),
+            DeclarationKind::Agent(agent) => {
+                check_agent_metadata(agent, &declaration.span, model, diagnostics);
+            }
             _ => {}
         }
     }
+}
+
+fn check_policy_totality(
+    policy: &aster_syntax::PolicyDeclaration,
+    span: &aster_diagnostics::Span,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let has_final_otherwise = policy
+        .rules
+        .last()
+        .is_some_and(|rule| rule.condition.is_none());
+    let has_early_otherwise = policy
+        .rules
+        .iter()
+        .take(policy.rules.len().saturating_sub(1))
+        .any(|rule| rule.condition.is_none());
+    if has_final_otherwise && !has_early_otherwise {
+        return;
+    }
+    diagnostics.push(
+        Diagnostic::error(
+            KnownDiagnosticCode::NonTotalPolicy.into(),
+            "policy must have exactly one final otherwise rule",
+            span.clone(),
+        )
+        .with_help("end the policy with its only `otherwise` decision"),
+    );
 }
 
 fn check_policy_signature(
@@ -798,9 +1015,45 @@ fn unexpected_tool_metadata(
 
 fn check_agent_metadata(
     agent: &AgentDeclaration,
+    declaration_span: &aster_diagnostics::Span,
     model: &Model<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    if agent.handlers.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::TypeMismatch.into(),
+                "agents require at least one event handler",
+                declaration_span.clone(),
+            )
+            .with_help("declare an `on <event>(payload: Incoming<T>)` handler"),
+        );
+    }
+    for handler in &agent.handlers {
+        if handler.parameters.len() != 1 {
+            diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::TypeMismatch.into(),
+                    "event handlers accept exactly one payload parameter",
+                    handler.span.clone(),
+                )
+                .with_help("declare one parameter with type Incoming<T>"),
+            );
+        } else if !matches!(
+            model.normalized(&model.resolve_type(&handler.parameters[0].ty)),
+            Type::Incoming(_)
+        ) {
+            diagnostics.push(
+                Diagnostic::error(
+                    KnownDiagnosticCode::TypeMismatch.into(),
+                    "event handler payload must have type Incoming<T>",
+                    handler.parameters[0].ty.span.clone(),
+                )
+                .with_help("wrap the external payload type in Incoming<...>"),
+            );
+        }
+    }
+
     for field in &agent.state {
         if model.contains_secret(&model.resolve_type(&field.ty)) {
             diagnostics.push(
@@ -917,6 +1170,7 @@ fn check_function(
             .map(|capability| capability.path.as_string())
             .collect(),
         return_type: model.resolve_type(&function.return_type),
+        return_allowed: true,
         agent,
     };
     ExpressionChecker::new(model, diagnostics).check_block(
@@ -937,6 +1191,7 @@ fn check_agent_bodies(
         pure: true,
         allowed_capabilities: BTreeSet::new(),
         return_type: Type::Unit,
+        return_allowed: false,
         agent: Some(agent.name.clone()),
     };
     let mut checker = ExpressionChecker::new(model, diagnostics);
@@ -977,6 +1232,7 @@ fn check_agent_bodies(
                 .map(|capability| capability.path.as_string())
                 .collect(),
             return_type: model.resolve_type(&handler.return_type),
+            return_allowed: true,
             agent: Some(agent.name.clone()),
         };
         ExpressionChecker::new(model, diagnostics).check_block(
@@ -992,6 +1248,7 @@ fn pure_context(return_type: Type) -> CheckContext {
         pure: true,
         allowed_capabilities: BTreeSet::new(),
         return_type,
+        return_allowed: false,
         agent: None,
     }
 }

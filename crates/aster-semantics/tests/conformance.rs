@@ -73,7 +73,7 @@ tool Store.put(value: Candidate<Text>) -> Unit {
 }"#,
     );
 
-    assert_eq!(codes, ["ASTER-TYPE-2004"]);
+    assert_eq!(codes, ["ASTER-TYPE-2004", "ASTER-TYPE-2001"]);
 
     assert_checks(
         r#"module test;
@@ -86,6 +86,64 @@ tool Store.put(request_id: Int) -> Unit {
   idempotency request_id;
 }"#,
     );
+}
+
+#[test]
+fn tool_boundaries_cannot_accept_opaque_candidates() {
+    let direct = diagnostic_codes(
+        r#"module test;
+capability StoreWrite(scope: Text);
+tool Store.put(value: Candidate<Text>, request_id: Text) -> Unit {
+  mode write;
+  capability StoreWrite("scope");
+  sensitivity private;
+  risk irreversible;
+  idempotency request_id;
+}"#,
+    );
+    let nested = diagnostic_codes(
+        r#"module test;
+type Envelope = { value: Candidate<Text> };
+capability StoreWrite(scope: Text);
+tool Store.put(value: Envelope, request_id: Text) -> Unit {
+  mode write;
+  capability StoreWrite("scope");
+  sensitivity private;
+  risk irreversible;
+  idempotency request_id;
+}"#,
+    );
+
+    assert_eq!(direct, ["ASTER-TYPE-2001"]);
+    assert_eq!(nested, ["ASTER-TYPE-2001"]);
+}
+
+#[test]
+fn json_boundaries_reject_privileged_wrapper_shapes() {
+    let prompt_result = diagnostic_codes(
+        r#"module test;
+prompt Parse() -> Observation<Text> { instruction """parse"""; data {}; }"#,
+    );
+    let tool_result = diagnostic_codes(
+        r#"module test;
+capability Read(scope: Text);
+tool Store.get() -> Checked<Text> { mode read; capability Read("store"); sensitivity private; }"#,
+    );
+    let persistent_wrapper = diagnostic_codes(
+        r"module test;
+agent Worker() requires [] {
+  state { value: Incoming<Text> = Unit; }
+  budget per_event {}
+  on message(value: Incoming<Unit>) -> Result<Unit, Error> { return Ok(Unit); }
+}",
+    );
+    let capability_wrapper =
+        diagnostic_codes("module test; capability Invalid(value: Checked<Text>);");
+
+    assert_eq!(prompt_result, ["ASTER-TYPE-2002"]);
+    assert_eq!(tool_result, ["ASTER-TYPE-2002"]);
+    assert_eq!(persistent_wrapper, ["ASTER-TYPE-2002", "ASTER-TYPE-2002"]);
+    assert_eq!(capability_wrapper, ["ASTER-TYPE-2002"]);
 }
 
 #[test]
@@ -120,12 +178,44 @@ fn duplicate_state_fields_and_handlers_are_rejected() {
 agent Worker() requires [] {
   state { value: Int = 1; value: Int = 2; }
   budget per_event {}
-  on tick() -> Result<Unit, Error> { return Ok(Unit); }
-  on tick() -> Result<Unit, Error> { return Ok(Unit); }
+  on tick(value: Incoming<Unit>) -> Result<Unit, Error> { return Ok(Unit); }
+  on tick(value: Incoming<Unit>) -> Result<Unit, Error> { return Ok(Unit); }
 }",
     );
 
     assert_eq!(codes, ["ASTER-NAME-1002", "ASTER-NAME-1002"]);
+}
+
+#[test]
+fn event_handlers_accept_one_incoming_payload() {
+    let arity = diagnostic_codes(
+        r"module test;
+agent Worker() requires [] {
+  state {}
+  budget per_event {}
+  on message(first: Incoming<Text>, second: Incoming<Text>) -> Result<Unit, Error> { return Ok(Unit); }
+}",
+    );
+    let wrapper = diagnostic_codes(
+        r"module test;
+agent Worker() requires [] {
+  state {}
+  budget per_event {}
+  on message(value: Text) -> Result<Unit, Error> { return Ok(Unit); }
+}",
+    );
+
+    assert_eq!(arity, ["ASTER-TYPE-2002"]);
+    assert_eq!(wrapper, ["ASTER-TYPE-2002"]);
+}
+
+#[test]
+fn agents_require_at_least_one_event_handler() {
+    let codes = diagnostic_codes(
+        "module test; agent Worker() requires [] { state {} budget per_event {} }",
+    );
+
+    assert_eq!(codes, ["ASTER-TYPE-2002"]);
 }
 
 #[test]
@@ -172,6 +262,7 @@ capability StoreRead(id: Text);
 agent Worker() requires [StoreRead()] {
   state {}
   budget per_event {}
+  on message(value: Incoming<Unit>) -> Result<Unit, Error> { return Ok(Unit); }
 }",
     );
 
@@ -185,6 +276,7 @@ fn secret_types_are_confined_to_secret_tool_parameters() {
     let function_parameter =
         diagnostic_codes("module test; fn bad(value: Secret<Text>) -> Unit { return Unit; }");
     let record_field = diagnostic_codes("module test; type Bad = { value: Secret<Text> };");
+    let enum_payload = diagnostic_codes("module test; enum Bad { Value(Secret<Text>) }");
     let non_secret_tool = diagnostic_codes(
         r"module test;
 capability VaultWrite(id: Text);
@@ -208,6 +300,7 @@ tool Vault.get(id: Text) -> Secret<Text> {
 
     assert_eq!(function_parameter, ["ASTER-SECRET-8002"]);
     assert_eq!(record_field, ["ASTER-SECRET-8002"]);
+    assert_eq!(enum_payload, ["ASTER-SECRET-8002"]);
     assert_eq!(non_secret_tool, ["ASTER-SECRET-8002"]);
     assert_eq!(secret_return, ["ASTER-SECRET-8002"]);
 
@@ -266,6 +359,27 @@ policy Invalid(value: Text) {
 }
 
 #[test]
+fn policy_otherwise_rule_is_unique_and_final() {
+    let codes = diagnostic_codes(
+        r#"module test;
+capability StoreWrite(key: Text);
+tool Store.put(key: Text) -> Unit {
+  mode write;
+  capability StoreWrite(key);
+  sensitivity private;
+  risk reversible;
+  idempotency key;
+}
+policy Invalid(proposal: Proposal<Store.put>) {
+  deny "first" otherwise;
+  deny "unreachable" otherwise;
+}"#,
+    );
+
+    assert_eq!(codes, ["ASTER-POLICY-4001"]);
+}
+
+#[test]
 fn read_tools_reject_write_only_metadata() {
     let codes = diagnostic_codes(
         r"module test;
@@ -306,6 +420,36 @@ fn calls_reject_unknown_and_extra_arguments() {
 
     assert_eq!(unknown, ["ASTER-TYPE-2002", "ASTER-NAME-1001"]);
     assert_eq!(extra, ["ASTER-TYPE-2002"]);
+}
+
+#[test]
+fn builtins_and_enum_constructors_reject_named_arguments() {
+    let builtin =
+        diagnostic_codes("module test; fn bad() -> Option<Int> { return Some(value = 1); }");
+    let constructor = diagnostic_codes(
+        "module test; enum Choice { Pick(Int) } fn bad() -> Choice { return Choice.Pick(value = 1); }",
+    );
+
+    assert_eq!(builtin, ["ASTER-TYPE-2002"]);
+    assert_eq!(constructor, ["ASTER-TYPE-2002"]);
+}
+
+#[test]
+fn governance_action_symbols_cannot_have_type_arguments() {
+    let codes = diagnostic_codes(
+        r#"module test;
+capability Write(scope: Text);
+tool Store.put(request_id: Text) -> Unit {
+  mode write;
+  capability Write("store");
+  sensitivity private;
+  risk irreversible;
+  idempotency request_id;
+}
+policy Direct(proposal: Proposal<Store.put<Text>>) { deny "no" otherwise; }"#,
+    );
+
+    assert_eq!(codes, ["ASTER-TYPE-2002"]);
 }
 
 #[test]
@@ -630,6 +774,74 @@ policy Invalid(proposal: Proposal<Store.put>) {
 }
 
 #[test]
+fn human_approval_principals_are_text() {
+    let codes = diagnostic_codes(
+        r"module test;
+capability StoreWrite(id: Text);
+tool Store.put(id: Text) -> Text {
+  mode write;
+  capability StoreWrite(id);
+  sensitivity private;
+  risk reversible;
+  idempotency id;
+}
+policy Invalid(proposal: Proposal<Store.put>) {
+  approve by Human(1) otherwise;
+}",
+    );
+
+    assert_eq!(codes, ["ASTER-TYPE-2002"]);
+}
+
+#[test]
+fn stateful_policies_match_the_authorizing_agent_context() {
+    let wrong_agent = diagnostic_codes(
+        r#"module test;
+capability Write(scope: Text);
+tool Store.put(request_id: Text) -> Unit {
+  mode write;
+  capability Write("store");
+  sensitivity private;
+  risk reversible;
+  idempotency request_id;
+}
+agent Other() requires [] { state { enabled: Bool = true; } budget per_event {} on message(value: Incoming<Unit>) -> Result<Unit, Error> { return Ok(Unit); } }
+policy Direct(proposal: Proposal<Store.put>, snapshot: Other.State) { allow when snapshot.enabled; deny "no" otherwise; }
+agent Worker() requires [Write("store")] {
+  state {}
+  budget per_event { external_writes <= 1; }
+  on message(msg: Incoming<Unit>) -> Result<Unit, Error> {
+    let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
+    let proposal = propose Store.put(event.id) for purpose;
+    let permit = (authorize proposal using Direct)?;
+    return Ok(Unit);
+  }
+}"#,
+    );
+    let stateful_flow = diagnostic_codes(
+        r#"module test;
+capability Write(scope: Text);
+tool Store.put(request_id: Text) -> Unit {
+  mode write;
+  capability Write("store");
+  sensitivity private;
+  risk reversible;
+  idempotency request_id;
+}
+agent Worker() requires [] { state { enabled: Bool = true; } budget per_event {} on message(value: Incoming<Unit>) -> Result<Unit, Error> { return Ok(Unit); } }
+policy Direct(proposal: Proposal<Store.put>, snapshot: Worker.State) { allow when snapshot.enabled; deny "no" otherwise; }
+flow save(id: Text, purpose: Intent<Save>) -> Result<Unit, Error> uses [Write("store")] {
+  let proposal = propose Store.put(id) for purpose;
+  let permit = (authorize proposal using Direct)?;
+  return Ok(Unit);
+}"#,
+    );
+
+    assert_eq!(wrong_agent, ["ASTER-TYPE-2002"]);
+    assert_eq!(stateful_flow, ["ASTER-TYPE-2002"]);
+}
+
+#[test]
 fn executable_bodies_require_an_explicit_return() {
     let codes = diagnostic_codes("module test; fn missing() -> Unit { Unit; }");
 
@@ -646,7 +858,7 @@ fn state_updates_are_handler_only_and_name_each_mutable_field_once() {
 agent Worker(owner: Text) requires [] {
   state { count: Int = 0; }
   budget per_event {}
-  on tick() -> Result<Unit, Error> {
+  on tick(value: Incoming<Unit>) -> Result<Unit, Error> {
     update state { count = 1; count = 2; missing = 3; owner = "changed"; }
     return Ok(Unit);
   }
@@ -667,10 +879,25 @@ fn state_defaults_cannot_read_partially_initialized_self() {
 agent Worker() requires [] {
   state { value: Int = self.value; }
   budget per_event {}
+  on message(value: Incoming<Unit>) -> Result<Unit, Error> { return Ok(Unit); }
 }",
     );
 
     assert_eq!(codes, ["ASTER-NAME-1001"]);
+}
+
+#[test]
+fn metadata_expressions_reject_return_statements() {
+    let codes = diagnostic_codes(
+        r"module test;
+agent Worker() requires [] {
+  state { value: Unit = if true { return Unit; } else { Unit; }; }
+  budget per_event {}
+  on message(value: Incoming<Unit>) -> Result<Unit, Error> { return Ok(Unit); }
+}",
+    );
+
+    assert_eq!(codes, ["ASTER-TYPE-2002"]);
 }
 
 fn affine_prelude(body: &str) -> String {

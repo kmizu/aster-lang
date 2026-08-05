@@ -12,8 +12,9 @@ use thiserror::Error;
 use crate::{
     Agent, CapabilitySpec, Catalog, FieldSpec, IR_SCHEMA_VERSION, Instruction, InstructionKind,
     MatchTarget, NamedExpression, NamedValue, PatternSpec, PolicyDecisionSpec, PolicyRuleSpec,
-    PolicySpec, Program, ProgramError, PromptSpec, PureExpression, Routine, StateFieldSpec,
-    ToolMode, ToolSpec, TypeSpec, ValidatorRequirementSpec, ValidatorSpec, ValueId,
+    PolicySpec, Program, ProgramError, PromptSpec, PureBlockSpec, PureExpression, PureMatchArmSpec,
+    PureStatementSpec, Routine, StateFieldSpec, ToolMode, ToolSpec, TypeSpec,
+    ValidatorRequirementSpec, ValidatorSpec, ValueId,
 };
 
 /// Controlled failure to convert checked source into explicit IR.
@@ -291,7 +292,7 @@ fn lower_routine(
     function: &FunctionDeclaration,
     callables: &BTreeSet<String>,
 ) -> Result<Routine, LoweringError> {
-    let mut builder = RoutineBuilder::new(name.clone(), callables);
+    let mut builder = RoutineBuilder::new(name.clone(), callables, &function.parameters);
     builder.lower_block(&function.body)?;
     Ok(Routine {
         name,
@@ -306,16 +307,45 @@ struct RoutineBuilder<'a> {
     callables: &'a BTreeSet<String>,
     instructions: Vec<Instruction>,
     next_value: u32,
+    next_binding: u32,
+    bindings: BTreeMap<String, String>,
 }
 
 impl<'a> RoutineBuilder<'a> {
-    fn new(name: String, callables: &'a BTreeSet<String>) -> Self {
+    fn new(name: String, callables: &'a BTreeSet<String>, parameters: &[Parameter]) -> Self {
         Self {
             name,
             callables,
             instructions: Vec::new(),
             next_value: 0,
+            next_binding: 0,
+            bindings: parameters
+                .iter()
+                .map(|parameter| (parameter.name.clone(), parameter.name.clone()))
+                .collect(),
         }
+    }
+
+    fn bind_name(&mut self, source_name: &str) -> Result<String, LoweringError> {
+        let index = self.next_binding;
+        self.next_binding = self
+            .next_binding
+            .checked_add(1)
+            .ok_or_else(|| LoweringError::RoutineTooLarge(self.name.clone()))?;
+        let runtime_name = format!("#local:{index}:{source_name}");
+        self.bindings
+            .insert(source_name.to_owned(), runtime_name.clone());
+        Ok(runtime_name)
+    }
+
+    fn resolved_path(&self, path: &aster_syntax::Path) -> String {
+        let mut segments = path.segments.clone();
+        if let Some(first) = segments.first_mut()
+            && let Some(runtime_name) = self.bindings.get(first)
+        {
+            runtime_name.clone_into(first);
+        }
+        segments.join(".")
     }
 
     fn value(&mut self) -> Result<ValueId, LoweringError> {
@@ -354,10 +384,8 @@ impl<'a> RoutineBuilder<'a> {
         match &statement.kind {
             StatementKind::Let { name, value, .. } => {
                 let value = self.lower_expression(value)?;
-                self.push(InstructionKind::Bind {
-                    name: name.clone(),
-                    value,
-                })?;
+                let name = self.bind_name(name)?;
+                self.push(InstructionKind::Bind { name, value })?;
             }
             StatementKind::Require { condition } => {
                 let condition = self.lower_expression(condition)?;
@@ -572,7 +600,7 @@ impl<'a> RoutineBuilder<'a> {
                 value: value.clone(),
             },
             ExpressionKind::Path { path } => PureExpression::Path {
-                path: path.as_string(),
+                path: self.resolved_path(path),
             },
             ExpressionKind::List { elements } => PureExpression::List {
                 elements: self.lower_pure_elements(elements)?,
@@ -702,6 +730,7 @@ impl<'a> RoutineBuilder<'a> {
             then_target: 0,
             else_target: 0,
         })?;
+        let outer_bindings = self.bindings.clone();
         let then_target = self.position()?;
         let then_value = self.lower_block_value(then_block)?;
         self.push(InstructionKind::Copy {
@@ -709,6 +738,7 @@ impl<'a> RoutineBuilder<'a> {
             source: then_value,
         })?;
         let jump_index = self.push(InstructionKind::Jump { target: 0 })?;
+        self.bindings.clone_from(&outer_bindings);
         let else_target = self.position()?;
         let else_value = self.lower_block_value(else_block)?;
         self.push(InstructionKind::Copy {
@@ -716,6 +746,7 @@ impl<'a> RoutineBuilder<'a> {
             source: else_value,
         })?;
         let end = self.position()?;
+        self.bindings = outer_bindings;
         self.instructions[branch_index].kind = InstructionKind::Branch {
             condition,
             then_target,
@@ -738,9 +769,19 @@ impl<'a> RoutineBuilder<'a> {
         })?;
         let mut targets = Vec::new();
         let mut jumps = Vec::new();
+        let outer_bindings = self.bindings.clone();
         for arm in arms {
+            self.bindings.clone_from(&outer_bindings);
+            let mut pattern = pattern_spec(&arm.pattern);
+            if let PatternSpec::Variant {
+                binding: Some(binding),
+                ..
+            } = &mut pattern
+            {
+                *binding = self.bind_name(binding)?;
+            }
             targets.push(MatchTarget {
-                pattern: pattern_spec(&arm.pattern),
+                pattern,
                 target: self.position()?,
             });
             let arm_value = self.lower_expression(&arm.value)?;
@@ -750,6 +791,7 @@ impl<'a> RoutineBuilder<'a> {
             })?;
             jumps.push(self.push(InstructionKind::Jump { target: 0 })?);
         }
+        self.bindings = outer_bindings;
         let end = self.position()?;
         self.instructions[match_index].kind = InstructionKind::Match {
             value,
@@ -874,9 +916,28 @@ fn pure_expression(expression: &Expression) -> Result<PureExpression, LoweringEr
                     .collect::<Result<_, LoweringError>>()?,
             }
         }
+        ExpressionKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => PureExpression::If {
+            condition: Box::new(pure_expression(condition)?),
+            then_block: pure_block(then_block)?,
+            else_block: pure_block(else_block)?,
+        },
+        ExpressionKind::Match { value, arms } => PureExpression::Match {
+            value: Box::new(pure_expression(value)?),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    Ok(PureMatchArmSpec {
+                        pattern: pattern_spec(&arm.pattern),
+                        value: pure_expression(&arm.value)?,
+                    })
+                })
+                .collect::<Result<_, LoweringError>>()?,
+        },
         ExpressionKind::Try { .. }
-        | ExpressionKind::If { .. }
-        | ExpressionKind::Match { .. }
         | ExpressionKind::Infer { .. }
         | ExpressionKind::Validate { .. }
         | ExpressionKind::Observe { .. }
@@ -886,6 +947,29 @@ fn pure_expression(expression: &Expression) -> Result<PureExpression, LoweringEr
         | ExpressionKind::Commit { .. }
         | ExpressionKind::Reconcile { .. } => return Err(LoweringError::EffectInPureMetadata),
     })
+}
+
+fn pure_block(block: &Block) -> Result<PureBlockSpec, LoweringError> {
+    let statements = block
+        .statements
+        .iter()
+        .map(|statement| match &statement.kind {
+            StatementKind::Let { name, value, .. } => Ok(PureStatementSpec::Let {
+                name: name.clone(),
+                value: pure_expression(value)?,
+            }),
+            StatementKind::Require { condition } => Ok(PureStatementSpec::Require {
+                condition: pure_expression(condition)?,
+            }),
+            StatementKind::Expression { expression } => Ok(PureStatementSpec::Expression {
+                value: pure_expression(expression)?,
+            }),
+            StatementKind::UpdateState { .. } | StatementKind::Return { .. } => {
+                Err(LoweringError::EffectInPureMetadata)
+            }
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(PureBlockSpec { statements })
 }
 
 fn pure_fields(fields: &[FieldInitializer]) -> Result<Vec<NamedExpression>, LoweringError> {
