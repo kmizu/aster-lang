@@ -237,6 +237,22 @@ In particular:
 - 2026-08-06: Duplicate tool metadata now fails in the parser rather than
   silently overwriting the earlier entry. Affine diagnostics and move joins
   now cover calls, match arms, nested containers, records, and enum payloads.
+- 2026-08-06: General VM coverage exposed and fixed accepted-source/runtime
+  mismatches. Pure helpers invoked from policy metadata now execute `match`,
+  `require`, and result unwrapping; proposal argument projection decodes the
+  declared tool types instead of losing enum/record identity in generic JSON.
+- 2026-08-06: Runtime `Result<T,E>` now preserves a typed `E` payload rather
+  than hard-coding errors to strings, while postfix `?` still requires the
+  statically declared `Error` channel and converts it to a controlled machine
+  failure. State defaults can use recorded event metadata but cannot read a
+  partially initialized `self`.
+- 2026-08-06: Named and positional arguments are normalized against declared
+  parameters in handler calls, pure metadata calls, prompt data, tool
+  requests, and capability requests. Reversed named calls/capabilities and a
+  positional write call now execute with the same mapping proven statically.
+- 2026-08-06: Added a runtime sweep for records, lists, `Option`, generic
+  `Result`, enums, `if`, `match`, pure calls, built-ins, unary/binary
+  operators, transactional state update, division by zero, and overflow.
 
 ## Discoveries and deviations
 
@@ -265,11 +281,12 @@ In particular:
 - `cargo test -p aster-semantics --test conformance`: 45 passed after the
   declaration, expression, affine, capability, secret-placement, pattern,
   state-update, provenance, and effect-reference TDD cycles.
-- `cargo test --workspace --all-features`: passed with 106 tests after the
-  second checkpoint changes.
+- `cargo test --workspace --all-features`: passed with 111 tests after the
+  third checkpoint changes, including all record/replay and CLI black-box
+  suites.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
-  passed after splitting record/list checking out of the expression dispatcher.
-- `git diff --check`: passed at the checkpoint.
+  passed after the generic result and argument-normalization runtime changes.
+- `git diff --check`: passed after the third checkpoint changes.
 
 ## Known limitations
 

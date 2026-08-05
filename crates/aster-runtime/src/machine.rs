@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use aster_ir::{
-    Agent, CapabilitySpec, InstructionKind, NamedExpression, NamedValue, PatternSpec,
-    PolicyDecisionSpec, Program, PureExpression, TypeSpec, ValueId,
+    Agent, CapabilitySpec, FieldSpec, InstructionKind, MatchTarget, NamedExpression, NamedValue,
+    PatternSpec, PolicyDecisionSpec, Program, PureExpression, TypeSpec, ValueId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
@@ -307,19 +307,6 @@ impl Machine {
             handler_parameter.name.clone(),
             decode_json(&request.payload, &handler_parameter.ty, &program)?,
         );
-        validate_declared_capabilities(&agent.capabilities, &locals, &program, &compiled_grants)?;
-        let current_state = initial_state(agent, &request.state, &locals, &program)?;
-        let mut self_record = current_state.clone();
-        for (name, value) in &locals {
-            if agent
-                .parameters
-                .iter()
-                .any(|parameter| parameter.name == *name)
-            {
-                self_record.insert(name.clone(), value.clone());
-            }
-        }
-        locals.insert("self".to_owned(), RuntimeValue::Record(self_record));
         locals.insert(
             "event".to_owned(),
             RuntimeValue::Record(BTreeMap::from([
@@ -333,6 +320,19 @@ impl Machine {
                 ),
             ])),
         );
+        validate_declared_capabilities(&agent.capabilities, &locals, &program, &compiled_grants)?;
+        let current_state = initial_state(agent, &request.state, &locals, &program)?;
+        let mut self_record = current_state.clone();
+        for (name, value) in &locals {
+            if agent
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == *name)
+            {
+                self_record.insert(name.clone(), value.clone());
+            }
+        }
+        locals.insert("self".to_owned(), RuntimeValue::Record(self_record));
         let input_hash = canonical_sha256(&request)
             .map_err(|error| MachineError::Serialization(error.to_string()))?;
         let limits = budget_limits(&agent.budget);
@@ -565,7 +565,7 @@ impl Machine {
                     });
                     RuntimeValue::Result(Ok(Box::new(RuntimeValue::Permit(permit))))
                 } else {
-                    RuntimeValue::Result(Err("approval denied".to_owned()))
+                    result_error("approval denied")
                 }
             }
             PendingCompletion::Write {
@@ -755,7 +755,7 @@ impl Machine {
             "prompt": prompt,
             "instruction": prompt_spec.instruction,
             "model_alias": model_alias,
-            "data": self.named_values_json(arguments)?,
+            "data": self.call_values_json(&prompt_spec.parameters, arguments)?,
             "expected_type": prompt_spec.result_type,
             "source_provenance": self.program.source_hash,
             "count_budget": {"dimension": "model_calls", "maximum": 1},
@@ -876,7 +876,7 @@ impl Machine {
                 self.frame_mut()?.slots.insert(target, *value);
                 self.advance()
             }
-            RuntimeValue::Result(Err(message)) => Err(MachineError::PropagatedError(message)),
+            RuntimeValue::Result(Err(error)) => Err(propagated_error(*error)),
             _ => Err(MachineError::TypeMismatch("expected Result".to_owned())),
         }
     }
@@ -892,10 +892,11 @@ impl Machine {
             .routine(name)
             .cloned()
             .ok_or(MachineError::UnknownRoutine)?;
-        let values: Vec<_> = arguments
+        let supplied: Vec<_> = arguments
             .iter()
-            .map(|argument| self.slot(argument.value).cloned())
+            .map(|argument| Ok((argument.name.clone(), self.slot(argument.value)?.clone())))
             .collect::<Result<_, _>>()?;
+        let values = order_runtime_arguments(&routine.parameters, supplied)?;
         let locals = routine
             .parameters
             .iter()
@@ -926,11 +927,11 @@ impl Machine {
         let result = if failures.is_empty() {
             RuntimeValue::Result(Ok(Box::new(RuntimeValue::Checked(candidate))))
         } else {
-            RuntimeValue::Result(Err(format!(
+            result_error(format!(
                 "validator `{validator}` failed requirements at {}; provenance {}",
                 failures.join(", "),
                 candidate.provenance
-            )))
+            ))
         };
         self.frame_mut()?.slots.insert(target, result);
         self.advance()
@@ -949,7 +950,7 @@ impl Machine {
             .get(&action)
             .cloned()
             .ok_or(MachineError::UnknownTool)?;
-        let arguments_json = self.named_values_json(arguments)?;
+        let arguments_json = self.call_values_json(&tool.parameters, arguments)?;
         let arguments_map = arguments_json
             .as_object()
             .cloned()
@@ -1026,7 +1027,7 @@ impl Machine {
             .get(action)
             .cloned()
             .ok_or(MachineError::UnknownTool)?;
-        let arguments_json = self.named_values_json(arguments)?;
+        let arguments_json = self.call_values_json(&tool.parameters, arguments)?;
         let arguments_map = arguments_json
             .as_object()
             .cloned()
@@ -1162,9 +1163,7 @@ impl Machine {
                         "decision": "deny",
                     }),
                 });
-                self.frame_mut()?
-                    .slots
-                    .insert(target, RuntimeValue::Result(Err(reason)));
+                self.frame_mut()?.slots.insert(target, result_error(reason));
                 self.advance()?;
                 Ok(None)
             }
@@ -1269,11 +1268,11 @@ impl Machine {
                 .remove(&receipt.proposal_hash);
             RuntimeValue::Result(Ok(Box::new(RuntimeValue::Reconciled(receipt))))
         } else {
-            RuntimeValue::Result(Err(format!(
+            result_error(format!(
                 "reconciliation validator `{validator}` failed requirements at {}; provenance {}",
                 failures.join(", "),
                 observation.provenance
-            )))
+            ))
         };
         self.frame_mut()?.slots.insert(target, value);
         self.advance()
@@ -1291,6 +1290,24 @@ impl Machine {
             result.insert(name, runtime_to_json(self.slot(argument.value)?)?);
         }
         Ok(JsonValue::Object(result))
+    }
+
+    fn call_values_json(
+        &self,
+        parameters: &[FieldSpec],
+        values: &[NamedValue],
+    ) -> Result<JsonValue, MachineError> {
+        let supplied = values
+            .iter()
+            .map(|value| Ok((value.name.clone(), self.slot(value.value)?.clone())))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ordered = order_runtime_arguments(parameters, supplied)?;
+        parameters
+            .iter()
+            .zip(ordered)
+            .map(|(parameter, value)| Ok((parameter.name.clone(), runtime_to_json(&value)?)))
+            .collect::<Result<serde_json::Map<_, _>, _>>()
+            .map(JsonValue::Object)
     }
 
     fn named_runtime_values(
@@ -1406,13 +1423,25 @@ impl Machine {
         for (name, value) in tool_arguments {
             locals.insert(name.clone(), json_to_runtime(value)?);
         }
-        let arguments = capability
+        let parameters = self
+            .program
+            .catalog
+            .capabilities
+            .get(&capability.name)
+            .ok_or(MachineError::UnknownCapabilityGrant)?;
+        let supplied = capability
             .arguments
             .iter()
             .map(|argument| {
-                eval_expression(&argument.value, &locals, &frame.slots, &self.program)
-                    .and_then(|value| runtime_to_json(&value))
+                Ok((
+                    argument.name.clone(),
+                    eval_expression(&argument.value, &locals, &frame.slots, &self.program)?,
+                ))
             })
+            .collect::<Result<Vec<_>, _>>()?;
+        let arguments = order_runtime_arguments(parameters, supplied)?
+            .iter()
+            .map(runtime_to_json)
             .collect::<Result<Vec<_>, _>>()?;
         Ok(json!({"capability": capability.name, "arguments": arguments}))
     }
@@ -1481,13 +1510,24 @@ fn validate_declared_capabilities(
     grants: &CompiledGrants,
 ) -> Result<(), MachineError> {
     for capability in capabilities {
-        let arguments = capability
+        let parameters = program
+            .catalog
+            .capabilities
+            .get(&capability.name)
+            .ok_or(MachineError::UnknownCapabilityGrant)?;
+        let supplied = capability
             .arguments
             .iter()
             .map(|argument| {
-                eval_expression(&argument.value, locals, &BTreeMap::new(), program)
-                    .and_then(|value| runtime_to_json(&value))
+                Ok((
+                    argument.name.clone(),
+                    eval_expression(&argument.value, locals, &BTreeMap::new(), program)?,
+                ))
             })
+            .collect::<Result<Vec<_>, _>>()?;
+        let arguments = order_runtime_arguments(parameters, supplied)?
+            .iter()
+            .map(runtime_to_json)
             .collect::<Result<Vec<_>, _>>()?;
         let request = json!({
             "capability": capability.name,
@@ -1598,9 +1638,11 @@ fn eval_expression(
         PureExpression::Record { fields, .. } => {
             eval_named_expressions(fields, locals, slots, program).map(RuntimeValue::Record)
         }
-        PureExpression::Field { target, field } => {
-            project(eval_expression(target, locals, slots, program)?, field)
-        }
+        PureExpression::Field { target, field } => project(
+            eval_expression(target, locals, slots, program)?,
+            field,
+            program,
+        ),
         PureExpression::Unary { operator, operand } => {
             eval_unary(operator, eval_expression(operand, locals, slots, program)?)
         }
@@ -1619,7 +1661,12 @@ fn eval_expression(
         } => {
             let values = arguments
                 .iter()
-                .map(|argument| eval_expression(&argument.value, locals, slots, program))
+                .map(|argument| {
+                    Ok((
+                        argument.name.clone(),
+                        eval_expression(&argument.value, locals, slots, program)?,
+                    ))
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             eval_call(function, values, program)
         }
@@ -1665,7 +1712,7 @@ fn resolve_path(
             .ok_or(MachineError::UnknownValue)?,
     };
     for field in segments {
-        value = project(value, field)?;
+        value = project(value, field, program)?;
     }
     Ok(value)
 }
@@ -1727,19 +1774,27 @@ fn eval_integer_binary(
 
 fn eval_call(
     function: &str,
-    values: Vec<RuntimeValue>,
+    arguments: Vec<(Option<String>, RuntimeValue)>,
     program: &Program,
 ) -> Result<RuntimeValue, MachineError> {
+    if let Some(routine) = program.routine(function) {
+        let values = order_runtime_arguments(&routine.parameters, arguments)?;
+        return eval_routine(function, values, program);
+    }
+    let values = arguments
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect::<Vec<_>>();
     match (function, values.as_slice()) {
         ("Ok", [value]) => Ok(RuntimeValue::Result(Ok(Box::new(value.clone())))),
-        ("Err", [RuntimeValue::Text(message)]) => Ok(RuntimeValue::Result(Err(message.clone()))),
+        ("Err", [error]) => Ok(RuntimeValue::Result(Err(Box::new(error.clone())))),
         ("Some", [value]) => Ok(RuntimeValue::Option(Some(Box::new(value.clone())))),
         ("Human", [value]) => Ok(value.clone()),
         ("len", [RuntimeValue::List(values)]) => i64::try_from(values.len())
             .map(RuntimeValue::Int)
             .map_err(|_| MachineError::TypeMismatch("list length".to_owned())),
         ("first", [RuntimeValue::List(values)]) => Ok(values.first().cloned().map_or_else(
-            || RuntimeValue::Result(Err("empty list".to_owned())),
+            || result_error("empty list"),
             |value| RuntimeValue::Result(Ok(Box::new(value))),
         )),
         ("contains", [RuntimeValue::List(values), value]) => {
@@ -1752,8 +1807,50 @@ fn eval_call(
         ("add_seconds", [RuntimeValue::Text(instant), RuntimeValue::Int(seconds)]) => {
             add_seconds(instant, *seconds).map(RuntimeValue::Text)
         }
-        _ if program.routine(function).is_some() => eval_routine(function, values, program),
         _ => enum_constructor(function, &values, program),
+    }
+}
+
+fn order_runtime_arguments(
+    parameters: &[FieldSpec],
+    arguments: Vec<(Option<String>, RuntimeValue)>,
+) -> Result<Vec<RuntimeValue>, MachineError> {
+    let mut ordered = vec![None; parameters.len()];
+    let mut positional = 0_usize;
+    for (name, value) in arguments {
+        let index = name.map_or_else(
+            || {
+                let index = positional;
+                positional = positional.saturating_add(1);
+                Some(index)
+            },
+            |name| {
+                parameters
+                    .iter()
+                    .position(|parameter| parameter.name == name)
+            },
+        );
+        let slot = index
+            .and_then(|index| ordered.get_mut(index))
+            .ok_or_else(|| MachineError::TypeMismatch("call arguments".to_owned()))?;
+        if slot.replace(value).is_some() {
+            return Err(MachineError::TypeMismatch("call arguments".to_owned()));
+        }
+    }
+    ordered
+        .into_iter()
+        .map(|value| value.ok_or_else(|| MachineError::TypeMismatch("call arguments".to_owned())))
+        .collect()
+}
+
+fn result_error(message: impl Into<String>) -> RuntimeValue {
+    RuntimeValue::Result(Err(Box::new(RuntimeValue::Text(message.into()))))
+}
+
+fn propagated_error(error: RuntimeValue) -> MachineError {
+    match error {
+        RuntimeValue::Text(message) => MachineError::PropagatedError(message),
+        _ => MachineError::TypeMismatch("Error".to_owned()),
     }
 }
 
@@ -1862,6 +1959,10 @@ fn eval_routine(
                 slots.insert(*target, eval_routine(routine, values, program)?);
                 ip = ip.checked_add(1).ok_or(MachineError::InvalidIp)?;
             }
+            InstructionKind::UnwrapResult { target, result } => {
+                eval_pure_unwrap(&mut slots, *target, *result)?;
+                ip = ip.checked_add(1).ok_or(MachineError::InvalidIp)?;
+            }
             InstructionKind::Branch {
                 condition,
                 then_target,
@@ -1877,12 +1978,53 @@ fn eval_routine(
             InstructionKind::Jump { target } => {
                 ip = usize::try_from(*target).map_err(|_| MachineError::InvalidIp)?;
             }
+            InstructionKind::Match { value, arms } => {
+                let value = slots.get(value).ok_or(MachineError::UnknownValue)?;
+                let target = eval_pure_match(value, arms, &mut locals)?;
+                ip = usize::try_from(target).map_err(|_| MachineError::InvalidIp)?;
+            }
+            InstructionKind::Require { condition } => {
+                if slots.get(condition) != Some(&RuntimeValue::Bool(true)) {
+                    return Err(MachineError::RequirementFailed);
+                }
+                ip = ip.checked_add(1).ok_or(MachineError::InvalidIp)?;
+            }
             InstructionKind::Return { value } => {
                 return slots.get(value).cloned().ok_or(MachineError::UnknownValue);
             }
             _ => return Err(MachineError::EffectInPureRoutine),
         }
     }
+}
+
+fn eval_pure_unwrap(
+    slots: &mut BTreeMap<ValueId, RuntimeValue>,
+    target: ValueId,
+    result: ValueId,
+) -> Result<(), MachineError> {
+    match slots.get(&result).cloned() {
+        Some(RuntimeValue::Result(Ok(value))) => {
+            slots.insert(target, *value);
+            Ok(())
+        }
+        Some(RuntimeValue::Result(Err(error))) => Err(propagated_error(*error)),
+        _ => Err(MachineError::TypeMismatch("expected Result".to_owned())),
+    }
+}
+
+fn eval_pure_match(
+    value: &RuntimeValue,
+    arms: &[MatchTarget],
+    locals: &mut BTreeMap<String, RuntimeValue>,
+) -> Result<u32, MachineError> {
+    let (target, binding) = arms
+        .iter()
+        .find_map(|arm| match_pattern(value, &arm.pattern).map(|binding| (arm.target, binding)))
+        .ok_or(MachineError::NonExhaustiveMatch)?;
+    if let PatternBinding::Bound(name, value) = binding {
+        locals.insert(name, *value);
+    }
+    Ok(target)
 }
 
 fn add_seconds(instant: &str, seconds: i64) -> Result<String, MachineError> {
@@ -2002,6 +2144,21 @@ fn decode_json(
             value: Box::new(decode_json(value, inner, program)?),
             provenance: boundary_provenance("untrusted", value, ty)?,
         })),
+        ("Result", [ok, error]) => {
+            if let Some(object) = value.as_object()
+                && object.len() == 1
+                && let Some(error_value) = object.get("error")
+            {
+                return Ok(RuntimeValue::Result(Err(Box::new(decode_json(
+                    error_value,
+                    error,
+                    program,
+                )?))));
+            }
+            Ok(RuntimeValue::Result(Ok(Box::new(decode_json(
+                value, ok, program,
+            )?))))
+        }
         ("Option", [_]) if value.is_null() => Ok(RuntimeValue::Option(None)),
         ("Option", [inner]) => Ok(RuntimeValue::Option(Some(Box::new(decode_json(
             value, inner, program,
@@ -2183,7 +2340,7 @@ fn runtime_to_json(value: &RuntimeValue) -> Result<JsonValue, MachineError> {
         | RuntimeValue::Candidate(ProvenancedValue { value, .. })
         | RuntimeValue::Checked(ProvenancedValue { value, .. })
         | RuntimeValue::Observation(ProvenancedValue { value, .. }) => runtime_to_json(value),
-        RuntimeValue::Result(Err(message)) => Ok(json!({"error": message})),
+        RuntimeValue::Result(Err(error)) => Ok(json!({"error": runtime_to_json(error)?})),
         RuntimeValue::Intent(intent) => serde_json::to_value(intent)
             .map_err(|error| MachineError::Serialization(error.to_string())),
         RuntimeValue::Proposal(proposal) => serde_json::to_value(proposal)
@@ -2196,7 +2353,11 @@ fn runtime_to_json(value: &RuntimeValue) -> Result<JsonValue, MachineError> {
     }
 }
 
-fn project(value: RuntimeValue, field: &str) -> Result<RuntimeValue, MachineError> {
+fn project(
+    value: RuntimeValue,
+    field: &str,
+    program: &Program,
+) -> Result<RuntimeValue, MachineError> {
     match (value, field) {
         (
             RuntimeValue::Incoming(ProvenancedValue { value, .. })
@@ -2208,12 +2369,27 @@ fn project(value: RuntimeValue, field: &str) -> Result<RuntimeValue, MachineErro
         (RuntimeValue::Record(mut fields), name) => {
             fields.remove(name).ok_or(MachineError::UnknownValue)
         }
-        (RuntimeValue::Proposal(proposal), "args") => proposal
-            .arguments
-            .iter()
-            .map(|(name, value)| Ok((name.clone(), json_to_runtime(value)?)))
-            .collect::<Result<_, _>>()
-            .map(RuntimeValue::Record),
+        (RuntimeValue::Proposal(proposal), "args") => {
+            let tool = program
+                .catalog
+                .tools
+                .get(&proposal.action)
+                .ok_or(MachineError::UnknownTool)?;
+            proposal
+                .arguments
+                .iter()
+                .map(|(name, value)| {
+                    let ty = tool
+                        .parameters
+                        .iter()
+                        .find(|parameter| parameter.name == *name)
+                        .map(|parameter| &parameter.ty)
+                        .ok_or(MachineError::UnknownValue)?;
+                    Ok((name.clone(), decode_json(value, ty, program)?))
+                })
+                .collect::<Result<_, _>>()
+                .map(RuntimeValue::Record)
+        }
         (RuntimeValue::Proposal(proposal), "intent") => Ok(RuntimeValue::Intent(proposal.intent)),
         (RuntimeValue::Proposal(proposal), "risk") => Ok(RuntimeValue::Text(proposal.risk)),
         (RuntimeValue::Proposal(proposal), "action") => Ok(RuntimeValue::Text(proposal.action)),
@@ -2236,9 +2412,7 @@ fn match_pattern(value: &RuntimeValue, pattern: &PatternSpec) -> Option<PatternB
                 ("None", RuntimeValue::Option(None)) => None,
                 ("Some", RuntimeValue::Option(Some(value)))
                 | ("Ok", RuntimeValue::Result(Ok(value))) => Some((**value).clone()),
-                ("Err", RuntimeValue::Result(Err(message))) => {
-                    Some(RuntimeValue::Text(message.clone()))
-                }
+                ("Err", RuntimeValue::Result(Err(error))) => Some((**error).clone()),
                 (
                     _,
                     RuntimeValue::Enum {

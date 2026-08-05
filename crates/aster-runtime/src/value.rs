@@ -47,7 +47,7 @@ pub enum RuntimeValue {
         payload: Option<Box<Self>>,
     },
     Option(Option<Box<Self>>),
-    Result(Result<Box<Self>, String>),
+    Result(Result<Box<Self>, Box<Self>>),
     Incoming(ProvenancedValue),
     Untrusted(ProvenancedValue),
     Candidate(ProvenancedValue),
@@ -78,7 +78,7 @@ impl RuntimeValue {
                 ..
             }
             | Self::Option(Some(value))
-            | Self::Result(Ok(value))
+            | Self::Result(Ok(value) | Err(value))
             | Self::Incoming(ProvenancedValue { value, .. })
             | Self::Untrusted(ProvenancedValue { value, .. })
             | Self::Candidate(ProvenancedValue { value, .. })
@@ -91,7 +91,6 @@ impl RuntimeValue {
             | Self::Text(_)
             | Self::Enum { payload: None, .. }
             | Self::Option(None)
-            | Self::Result(Err(_))
             | Self::Intent(_)
             | Self::Proposal(_)
             | Self::Permit(_) => false,
@@ -108,7 +107,7 @@ impl RuntimeValue {
                 ..
             }
             | Self::Option(Some(value))
-            | Self::Result(Ok(value))
+            | Self::Result(Ok(value) | Err(value))
             | Self::Incoming(ProvenancedValue { value, .. })
             | Self::Untrusted(ProvenancedValue { value, .. })
             | Self::Candidate(ProvenancedValue { value, .. })
@@ -123,7 +122,6 @@ impl RuntimeValue {
             | Self::Text(_)
             | Self::Enum { payload: None, .. }
             | Self::Option(None)
-            | Self::Result(Err(_))
             | Self::Intent(_)
             | Self::Permit(_)
             | Self::Secret(_) => Ok(()),

@@ -91,8 +91,11 @@ tool Store.put(request_id: Int) -> Unit {
 #[test]
 fn cyclic_type_aliases_are_rejected() {
     let codes = diagnostic_codes("module test; type First = Second; type Second = First;");
+    let nested =
+        diagnostic_codes("module test; type First = List<Second>; type Second = Option<First>;");
 
     assert_eq!(codes, ["ASTER-TYPE-2002", "ASTER-TYPE-2002"]);
+    assert_eq!(nested, ["ASTER-TYPE-2002", "ASTER-TYPE-2002"]);
 }
 
 #[test]
@@ -326,6 +329,15 @@ fn record_construction_requires_an_exact_field_set() {
 fn if_expression_unifies_branch_result_types() {
     let codes =
         diagnostic_codes("module test; fn bad() -> Int { return if true { 1; } else { false; }; }");
+
+    assert_eq!(codes, ["ASTER-TYPE-2002"]);
+}
+
+#[test]
+fn result_propagation_requires_a_result_returning_context() {
+    let codes = diagnostic_codes(
+        "module test; fn bad(value: Result<Int, Error>) -> Int { return value?; }",
+    );
 
     assert_eq!(codes, ["ASTER-TYPE-2002"]);
 }
@@ -646,6 +658,19 @@ agent Worker(owner: Text) requires [] {
         fields,
         ["ASTER-NAME-1002", "ASTER-NAME-1001", "ASTER-NAME-1001"]
     );
+}
+
+#[test]
+fn state_defaults_cannot_read_partially_initialized_self() {
+    let codes = diagnostic_codes(
+        r"module test;
+agent Worker() requires [] {
+  state { value: Int = self.value; }
+  budget per_event {}
+}",
+    );
+
+    assert_eq!(codes, ["ASTER-NAME-1001"]);
 }
 
 fn affine_prelude(body: &str) -> String {

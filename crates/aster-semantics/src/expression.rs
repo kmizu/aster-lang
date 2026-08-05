@@ -351,6 +351,16 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
         context: &CheckContext,
     ) -> Type {
         let actual = self.check_expression(value, environment, context);
+        let result_context = matches!(
+            self.model.normalized(&context.return_type),
+            Type::Result(_, error) if self.compatible(&Type::Error, &error)
+        );
+        if !result_context {
+            self.type_mismatch(
+                "postfix `?` requires the enclosing callable to return Result<T, Error>",
+                &value.span,
+            );
+        }
         if let Type::Result(ok, error) = self.model.normalized(&actual) {
             self.expect_type(&Type::Error, &error, &value.span);
             *ok

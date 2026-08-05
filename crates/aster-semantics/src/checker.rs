@@ -304,11 +304,25 @@ fn alias_reaches(
         let TypeDefinition::Alias(reference) = &declaration.definition else {
             return false;
         };
-        let next = reference.path.as_string();
-        next == target || alias_reaches(&next, target, model, visited)
+        type_reference_reaches(reference, target, model, visited)
     });
     visited.remove(current);
     result
+}
+
+fn type_reference_reaches(
+    reference: &TypeReference,
+    target: &str,
+    model: &Model<'_>,
+    visited: &mut BTreeSet<String>,
+) -> bool {
+    let name = reference.path.as_string();
+    name == target
+        || reference
+            .arguments
+            .iter()
+            .any(|argument| type_reference_reaches(argument, target, model, visited))
+        || (model.types.contains_key(&name) && alias_reaches(&name, target, model, visited))
 }
 
 fn check_type_reference(
@@ -918,7 +932,6 @@ fn check_agent_bodies(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut defaults = environment_from_parameters(model, &agent.parameters);
-    defaults.insert("self", Type::AgentState(agent.name.clone()));
     defaults.insert("event", Type::Event);
     let default_context = CheckContext {
         pure: true,

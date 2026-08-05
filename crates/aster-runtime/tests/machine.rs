@@ -130,7 +130,7 @@ agent Writer(owner: Text) requires [Write(owner)] {
   budget per_event { external_writes <= 1; }
   on message(msg: Incoming<Int>) -> Result<Unit, Error> {
     let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
-    let proposal = propose Store.put(owner = owner, request_id = msg.value) for purpose;
+    let proposal = propose Store.put(owner, msg.value) for purpose;
     let permit = (authorize proposal using Direct)?;
     let receipt = (commit proposal with permit)?;
     return Ok(Unit);
@@ -164,6 +164,187 @@ agent Writer(owner: Text) requires [Write(owner)] {
             }
             Step::Completed(_) => panic!("write effect was skipped"),
             Step::Failed(error) => panic!("machine failed before write: {error}"),
+        }
+    }
+}
+
+#[test]
+fn policy_helpers_execute_typed_match_control_flow() {
+    let source = SourceFile::new(
+        "policy-match.aster",
+        r#"module policy_match;
+enum Decision { Yes, No }
+fn permitted(value: Decision) -> Bool {
+  require true;
+  return match value { Decision.Yes => true, Decision.No => false };
+}
+capability Write(owner: Text, scope: Text);
+tool Store.put(owner: Text, decision: Decision, request_id: Text) -> Unit {
+  mode write;
+  capability Write(scope = "store", owner = owner);
+  sensitivity private;
+  risk irreversible;
+  idempotency request_id;
+}
+policy Direct(proposal: Proposal<Store.put>) {
+  allow when permitted(proposal.args.decision);
+  deny "denied" otherwise;
+}
+agent Writer(owner: Text) requires [Write(scope = "store", owner = owner)] {
+  state {}
+  budget per_event { external_writes <= 1; }
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
+    let proposal = propose Store.put(owner = owner, decision = Decision.Yes, request_id = event.id) for purpose;
+    let permit = (authorize proposal using Direct)?;
+    let receipt = (commit proposal with permit)?;
+    return Ok(Unit);
+  }
+}
+"#,
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "Writer".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
+            payload: json!("save"),
+            state: BTreeMap::new(),
+            capabilities: CapabilityGrants {
+                schema_version: 1,
+                grants: vec![CapabilityGrant {
+                    capability: "Write".to_owned(),
+                    arguments: vec![json!("user-001"), json!("store")],
+                }],
+            },
+        },
+    )
+    .expect("machine starts");
+
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(effect) => {
+                assert_eq!(effect.kind, EffectKind::Write);
+                break;
+            }
+            Step::Completed(_) => panic!("write effect was skipped"),
+            Step::Failed(error) => panic!("policy helper failed: {error}"),
+        }
+    }
+}
+
+#[test]
+fn accepted_pure_constructs_execute_through_calls_and_state_update() {
+    let source = SourceFile::new(
+        "pure-constructs.aster",
+        r"module pure_constructs;
+type Summary = { score: Int, valid: Bool, later: Instant };
+enum Choice { Add(Int), Skip }
+fn recover(value: Int) -> Int {
+  let result: Result<Int, Int> = Err(value);
+  return match result { Ok(found) => found, Err(error) => error + 1 };
+}
+fn difference(left: Int, right: Int) -> Int { return left - right; }
+fn compute(values: List<Int>, choice: Choice, time: Instant) -> Result<Summary, Error> {
+  let head = (first(values))?;
+  let maybe = Some(head);
+  let from_option = match maybe { Some(value) => value, None => 0 };
+  let from_result = match Ok(from_option) { Ok(value) => value, Err(error) => 0 };
+  let adjustment = match choice { Choice.Add(value) => value, Choice.Skip => 0 };
+  let sign = if true { 1; } else { -1; };
+  require contains(values, head);
+  require subset([head], values);
+  return Ok(Summary { score = (from_result + adjustment) * sign + recover(4) + difference(right = 3, left = 10), valid = !false && (head == from_result), later = add_seconds(time, 60) });
+}
+agent Worker() requires [] {
+  state { score: Int = 0; valid: Bool = false; later: Instant = event.time; }
+  budget per_event {}
+  on message(msg: Incoming<Int>) -> Result<Unit, Error> {
+    let summary = (compute([msg.value, 2], Choice.Add(3), event.time))?;
+    update state { score = summary.score; valid = summary.valid; later = summary.later; }
+    return Ok(Unit);
+  }
+}
+",
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "Worker".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::new(),
+            payload: json!(42),
+            state: BTreeMap::new(),
+            capabilities: grants(&[]),
+        },
+    )
+    .expect("machine starts");
+
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Completed(outcome) => {
+                assert_eq!(outcome.state["score"], json!(57));
+                assert_eq!(outcome.state["valid"], json!(true));
+                assert_eq!(outcome.state["later"], json!("2026-08-05T12:01:00Z"));
+                break;
+            }
+            Step::Yield(effect) => panic!("pure program yielded {effect:?}"),
+            Step::Failed(error) => panic!("pure program failed: {error}"),
+        }
+    }
+}
+
+#[test]
+fn integer_division_and_overflow_fail_without_panicking() {
+    let source = SourceFile::new(
+        "arithmetic-errors.aster",
+        r"module arithmetic_errors;
+agent Worker() requires [] {
+  state {}
+  budget per_event {}
+  on message(msg: Incoming<Int>) -> Result<Unit, Error> {
+    let broken = if msg.value == 0 { 1 / 0; } else { msg.value + 1; };
+    return Ok(Unit);
+  }
+}
+",
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+
+    for payload in [json!(0), json!(i64::MAX)] {
+        let mut machine = Machine::start(
+            program.clone(),
+            StartRequest {
+                agent: "Worker".to_owned(),
+                event: "message".to_owned(),
+                event_id: "evt-001".to_owned(),
+                event_time: "2026-08-05T12:00:00Z".to_owned(),
+                agent_arguments: BTreeMap::new(),
+                payload,
+                state: BTreeMap::new(),
+                capabilities: grants(&[]),
+            },
+        )
+        .expect("machine starts");
+
+        loop {
+            match machine.step() {
+                Step::Continue => {}
+                Step::Failed(MachineError::TypeMismatch(message)) => {
+                    assert_eq!(message, "integer arithmetic");
+                    break;
+                }
+                other => panic!("expected controlled arithmetic failure, got {other:?}"),
+            }
         }
     }
 }
