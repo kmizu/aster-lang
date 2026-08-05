@@ -16,6 +16,7 @@ hex.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+aster-syntax = { path = "../aster-syntax" }
 tempfile.workspace = true
 
 [lints]

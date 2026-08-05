@@ -3,6 +3,19 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::{Intent, Permit, Proposal};
+
+/// Typed successful write response retained for reconciliation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ReceiptValue {
+    /// Committed action identity.
+    pub action: String,
+    /// Bound proposal hash.
+    pub proposal_hash: String,
+    /// Decoded write result.
+    pub value: Box<RuntimeValue>,
+}
+
 /// Serializable runtime values plus an opaque non-serializable secret handle.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -20,6 +33,11 @@ pub enum RuntimeValue {
     Candidate(Box<Self>),
     Checked(Box<Self>),
     Observation(Box<Self>),
+    Intent(Intent),
+    Proposal(Proposal),
+    Permit(Permit),
+    Receipt(ReceiptValue),
+    Reconciled(ReceiptValue),
     Secret(SecretHandle),
 }
 
@@ -42,12 +60,16 @@ impl RuntimeValue {
             | Self::Candidate(value)
             | Self::Checked(value)
             | Self::Observation(value) => value.contains_secret(),
+            Self::Receipt(receipt) | Self::Reconciled(receipt) => receipt.value.contains_secret(),
             Self::Unit
             | Self::Bool(_)
             | Self::Int(_)
             | Self::Text(_)
             | Self::Option(None)
-            | Self::Result(Err(_)) => false,
+            | Self::Result(Err(_))
+            | Self::Intent(_)
+            | Self::Proposal(_)
+            | Self::Permit(_) => false,
         }
     }
 }

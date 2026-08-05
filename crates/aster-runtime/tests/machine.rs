@@ -1,0 +1,228 @@
+use std::collections::BTreeMap;
+
+use aster_ir::lower;
+use aster_runtime::{
+    EffectKind, EffectResolution, Machine, MachineError, MachineSnapshot, StartRequest, Step,
+};
+use aster_semantics::check_source;
+use aster_syntax::SourceFile;
+use serde_json::{Value as JsonValue, json};
+
+fn checked_program(path: &str) -> aster_ir::Program {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join(path);
+    let text = std::fs::read_to_string(&path).expect("fixture is readable");
+    let source = SourceFile::new(path.display().to_string(), text);
+    lower(&check_source(&source).expect("fixture checks")).expect("fixture lowers")
+}
+
+fn inference_program() -> aster_ir::Program {
+    let source = SourceFile::new(
+        "inference.aster",
+        r#"module inference;
+type Message = { text: Untrusted<Text>, };
+type Answer = { value: Text, };
+capability ModelUse(alias: Text);
+prompt Parse(message: Untrusted<Text>) -> Answer {
+  instruction """Extract the answer.""";
+  data { message, };
+}
+agent A() requires [ModelUse("planner")] {
+  state {}
+  budget per_event { model_calls <= 1; model_tokens <= 10; }
+  on message(msg: Incoming<Message>) -> Result<Unit, Error> {
+    let candidate = (infer Parse(message = msg.value.text) using @planner)?;
+    return Ok(Unit);
+  }
+}
+"#,
+    );
+    lower(&check_source(&source).expect("source checks")).expect("source lowers")
+}
+
+#[test]
+fn direct_allow_write_path_never_yields_approval() {
+    // Catches policy evaluation that turns every authorization into approval.
+    let program = checked_program("tests/conformance/pass/direct_allow.aster");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "Writer".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
+            payload: json!("save"),
+            state: BTreeMap::new(),
+            grant_fingerprint: "grants-001".to_owned(),
+        },
+    )
+    .expect("machine starts");
+    let mut writes = 0;
+    let mut reads = 0;
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(effect) => {
+                let payload = match effect.kind {
+                    EffectKind::Write => {
+                        writes += 1;
+                        json!({"id": "created-001"})
+                    }
+                    EffectKind::Read => {
+                        reads += 1;
+                        json!({"id": "created-001"})
+                    }
+                    EffectKind::Approval => panic!("direct allow must not request approval"),
+                    EffectKind::Model => panic!("fixture has no model effect"),
+                };
+                machine
+                    .supply(&EffectResolution {
+                        request_hash: effect.request_hash,
+                        payload,
+                        actual_usage: BTreeMap::new(),
+                    })
+                    .expect("effect resolves");
+            }
+            Step::Completed(outcome) => {
+                assert_eq!(outcome.state, BTreeMap::new());
+                break;
+            }
+            Step::Failed(error) => panic!("machine failed: {error}"),
+        }
+    }
+    assert_eq!((writes, reads), (1, 1));
+}
+
+#[test]
+fn meeting_scheduler_runs_full_approval_and_reconciliation_path() {
+    // Catches example-specialized shortcuts and missing governed stages.
+    let program = checked_program("examples/meeting-scheduler/main.aster");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "Scheduler".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::from([("user".to_owned(), json!("user-001"))]),
+            payload: json!({
+                "text": "Schedule a 30 minute meeting with new.person@example.test"
+            }),
+            state: BTreeMap::from([
+                ("profile".to_owned(), json!({"known_attendees": []})),
+                ("last_event".to_owned(), JsonValue::Null),
+            ]),
+            grant_fingerprint: "grants-001".to_owned(),
+        },
+    )
+    .expect("machine starts");
+    let mut kinds = Vec::new();
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(effect) => {
+                kinds.push(effect.kind);
+                let payload = match (effect.kind, effect.identity.as_str()) {
+                    (EffectKind::Model, "ParseMeeting") => json!({
+                        "title": "Planning",
+                        "attendees": ["new.person@example.test"],
+                        "duration_minutes": 30
+                    }),
+                    (EffectKind::Read, "Calendar.free") => json!([{"id": "slot-001"}]),
+                    (EffectKind::Approval, "CalendarPolicy") => json!({"approved": true}),
+                    (EffectKind::Write, "Calendar.create")
+                    | (EffectKind::Read, "Calendar.lookup") => json!({"id": "event-001"}),
+                    other => panic!("unexpected effect: {other:?}"),
+                };
+                machine
+                    .supply(&EffectResolution {
+                        request_hash: effect.request_hash,
+                        payload,
+                        actual_usage: BTreeMap::new(),
+                    })
+                    .expect("effect resolves");
+            }
+            Step::Completed(outcome) => {
+                assert_eq!(outcome.state["last_event"], json!({"id": "event-001"}));
+                break;
+            }
+            Step::Failed(error) => panic!("machine failed: {error}"),
+        }
+    }
+    assert_eq!(
+        kinds,
+        vec![
+            EffectKind::Model,
+            EffectKind::Read,
+            EffectKind::Approval,
+            EffectKind::Write,
+            EffectKind::Read,
+        ]
+    );
+}
+
+#[test]
+fn machine_yields_resumes_and_round_trips_pending_snapshot() {
+    // Catches recursive AST execution and snapshots that lose an effect boundary.
+    let program = inference_program();
+    let request = StartRequest {
+        agent: "A".to_owned(),
+        event: "message".to_owned(),
+        event_id: "evt-001".to_owned(),
+        event_time: "2026-08-05T12:00:00Z".to_owned(),
+        agent_arguments: BTreeMap::new(),
+        payload: json!({"text": "hello"}),
+        state: BTreeMap::new(),
+        grant_fingerprint: "grants-001".to_owned(),
+    };
+    let mut machine = Machine::start(program.clone(), request).expect("machine starts");
+
+    let effect = loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(request) => break request,
+            other => panic!("expected effect yield, got {other:?}"),
+        }
+    };
+    assert_eq!(effect.kind, EffectKind::Model);
+    assert_eq!(effect.identity, "Parse");
+
+    let json = machine
+        .snapshot()
+        .expect("snapshot is safe")
+        .to_json()
+        .expect("snapshot serializes");
+    let snapshot = MachineSnapshot::from_json(&json).expect("snapshot validates");
+    let mut resumed = Machine::restore(program, snapshot).expect("snapshot restores");
+    assert_eq!(resumed.step(), Step::Yield(effect.clone()));
+    assert_eq!(
+        resumed.supply(&EffectResolution {
+            request_hash: "wrong".to_owned(),
+            payload: json!({"value": "answer"}),
+            actual_usage: BTreeMap::new(),
+        }),
+        Err(MachineError::ResolutionMismatch)
+    );
+    resumed
+        .reserve_pending_usage(&BTreeMap::from([("model_tokens".to_owned(), 10)]))
+        .expect("maximum usage reserves before resolution");
+    resumed
+        .supply(&EffectResolution {
+            request_hash: effect.request_hash,
+            payload: json!({"value": "answer"}),
+            actual_usage: BTreeMap::from([("model_tokens".to_owned(), 3)]),
+        })
+        .expect("matching resolution resumes");
+
+    loop {
+        match resumed.step() {
+            Step::Continue => {}
+            Step::Completed(outcome) => {
+                assert_eq!(outcome.state, BTreeMap::new());
+                break;
+            }
+            other => panic!("expected completion, got {other:?}"),
+        }
+    }
+}

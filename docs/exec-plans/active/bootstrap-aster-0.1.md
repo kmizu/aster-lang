@@ -74,6 +74,15 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   proposal hashing over every authority-relevant field, proposal-bound expiring
   single-use permits, deterministic budget reservation/settlement, hash-chained
   traces, and pre-serialization secret rejection.
+- 2026-08-05: Implemented the explicit-instruction VM through the complete
+  meeting path: model candidate, validation, observation, intent/proposal,
+  direct or approval policy authorization, affine permit consumption, commit,
+  reconciliation, and atomic state publication. Effect-boundary snapshots
+  preserve frames, slots, budgets, pending requests, and authority state.
+- 2026-08-05: Added an exact fixture driver with pure preview before admission,
+  variable-usage reservation, counted resolution, record-mode hash-chain traces,
+  and driver-free semantic replay. The meeting record and replay produce the
+  same canonical final state; changed input fails before effects.
 
 ## Discoveries and deviations
 
@@ -112,6 +121,10 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - `cargo test -p aster-runtime --test governance`: 5 tests passed for proposal
   binding, affine permit consumption, budgets, trace tamper detection, and
   secret-safe snapshot rejection.
+- `cargo test -p aster-runtime --tests`: 10 tests passed, including pending
+  snapshot restore, direct-allow zero-approval execution, full meeting approval
+  execution, fixture-backed recording, driver-free replay, and fingerprint
+  mismatch rejection.
 
 ## Known limitations
 
