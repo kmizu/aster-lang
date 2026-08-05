@@ -7,5 +7,7 @@ mod registry;
 mod span;
 
 pub use diagnostic::{Diagnostic, Severity};
-pub use registry::{DiagnosticCode, DiagnosticCodeError, Explanation, explain};
+pub use registry::{
+    DiagnosticCode, DiagnosticCodeError, Explanation, KnownDiagnosticCode, explain,
+};
 pub use span::{Span, SpanError};

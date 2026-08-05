@@ -9,7 +9,7 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 ## Milestones
 
 - [x] M1: Workspace, documentation skeleton, diagnostics, and mechanical checks.
-- [ ] M2: Lexer, parser, lossless comments, AST JSON, and canonical formatter.
+- [x] M2: Lexer, parser, lossless comments, AST JSON, and canonical formatter.
 - [ ] M3: Names, types, wrappers, purity/effects, capabilities, affine analysis,
       recursion rejection, persistence checks, and conformance fixtures.
 - [ ] M4: Typed serializable IR and the meeting scheduler lowering path.
@@ -29,6 +29,10 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   hashes.
 - RFC 3339 UTC timestamps normalize to `YYYY-MM-DDTHH:MM:SSZ`; no ambient clock.
 - Canonical JSON recursively sorts keys and uses JSON's integral number form.
+- Regular block comments nest; canonical formatting attaches comments to the
+  next containing/following declaration while preserving text and source order.
+- Records and enums require at least one field/variant in 0.1. This makes empty
+  `{}` after `if` and `match` unambiguous and keeps matchable enums inhabited.
 - Fixture matching uses effect kind, declaration identity, request hash, then
   queue position only to disambiguate exact duplicate requests.
 - Replay reconstructs and steps the machine; recorded final output is never
@@ -48,6 +52,13 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - 2026-08-05: The first diagnostics TDD cycle failed on missing public symbols,
   then passed five behavioral tests. Architecture and production-source checkers
   were also verified against deliberately invalid temporary workspaces.
+- 2026-08-05: Implemented the lossless lexer, serializable AST, recoverable
+  recursive-descent/Pratt parser, and canonical AST formatter. The complete
+  meeting scheduler parses through every governed-action expression and its
+  canonical format round-trips to the same normalized AST.
+- 2026-08-05: Parser recovery reports independent malformed declarations in
+  source order. Formatter tests preserve comments and block-string contents and
+  prove byte-identical second formatting.
 
 ## Discoveries and deviations
 
@@ -71,6 +82,11 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   rejected a repository missing required documents.
 - `bash scripts/tests/check-production-rust.sh`: passed and rejected production
   use of `expect` while permitting it in tests.
+- `cargo test -p aster-syntax --all-features`: lexer, parser, formatter,
+  recovery, full-example, and control-expression tests passed.
+- `cargo clippy -p aster-syntax --all-targets --all-features -- -D warnings`:
+  passed after boxing internal parser diagnostics and splitting formatter
+  responsibilities rather than suppressing lints.
 
 ## Known limitations
 

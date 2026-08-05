@@ -1,0 +1,131 @@
+module meeting.scheduler;
+
+type UserId = Text;
+
+type Email = Text;
+
+type UserMessage = {
+  text: Untrusted<Text>,
+};
+
+type MeetingRequest = {
+  title: Text,
+  attendees: List<Email>,
+  duration_minutes: Int,
+};
+
+type Slot = {
+  id: Text,
+};
+
+type EventRef = {
+  id: Text,
+};
+
+type EventExpectation = {
+  owner: UserId,
+  slot_id: Text,
+};
+
+type UserProfile = {
+  known_attendees: List<Email>,
+};
+
+capability ModelUse(alias: Text);
+
+capability CalendarRead(owner: UserId);
+
+capability CalendarWrite(owner: UserId);
+
+capability HumanApproval(owner: UserId);
+
+prompt ParseMeeting(message: Untrusted<Text>) -> MeetingRequest {
+  instruction """
+  Extract only meeting information explicitly present in the message.
+  Do not invent attendees, addresses, dates, or times.
+  """;
+
+  data {
+    message,
+  };
+}
+
+validator MeetingRules(x: MeetingRequest) {
+  require (x.duration_minutes >= 15);
+  require (x.duration_minutes <= 120);
+  require (len(x.attendees) > 0);
+}
+
+fn all_known(attendees: List<Email>, known: List<Email>) -> Bool {
+  return subset(attendees, known);
+}
+
+tool Calendar.free(owner: UserId, duration_minutes: Int) -> List<Slot> {
+  mode read;
+  capability CalendarRead(owner);
+  sensitivity private;
+}
+
+tool Calendar.create(owner: UserId, slot: Slot, title: Text, attendees: List<Email>, request_id: Text) -> EventRef {
+  mode write;
+  capability CalendarWrite(owner);
+  risk reversible;
+  idempotency request_id;
+  sensitivity private;
+}
+
+tool Calendar.lookup(owner: UserId, event_id: Text) -> EventRef {
+  mode read;
+  capability CalendarRead(owner);
+  sensitivity private;
+}
+
+validator EventMatches(expected: EventRef, actual: EventRef) {
+  require (expected.id == actual.id);
+}
+
+policy CalendarPolicy(p: Proposal<Calendar.create>, s: Scheduler.State) {
+  allow when all_known(p.args.attendees, s.profile.known_attendees);
+  approve by Human(s.user) when true;
+  deny "No policy rule allowed the calendar write" otherwise;
+}
+
+agent Scheduler(user: UserId)
+requires [
+  ModelUse("planner"),
+  CalendarRead(user),
+  CalendarWrite(user),
+  HumanApproval(user),
+] {
+  state {
+    profile: UserProfile = UserProfile { known_attendees = [], };
+    last_event: Option<EventRef> = None;
+  }
+
+  budget per_event {
+    model_calls <= 2;
+    model_tokens <= 4000;
+    external_reads <= 3;
+    external_writes <= 1;
+    approvals <= 1;
+    money_microunits <= 10000;
+  }
+
+  on message(msg: Incoming<UserMessage>) -> Result<Unit, Error> {
+    let candidate = (infer ParseMeeting(message = msg.value.text) using @planner)?;
+    let request = (validate candidate with MeetingRules)?;
+    let slots = (observe Calendar.free(owner = user, duration_minutes = request.value.duration_minutes))?;
+    require (len(slots.value) > 0);
+    let selected = (first(slots.value))?;
+    let purpose = intent ScheduleMeeting { actor = self; beneficiary = user; basis = [provenance(msg), provenance(request), provenance(slots)]; expected = EventExpectation { owner = user, slot_id = selected.id, }; expires_at = add_seconds(event.time, 120); };
+    let proposal = propose Calendar.create(owner = user, slot = selected, title = request.value.title, attendees = request.value.attendees, request_id = event.id) for purpose;
+    let permit = (authorize proposal using CalendarPolicy)?;
+    let receipt = (commit proposal with permit)?;
+    let actual = (observe Calendar.lookup(owner = user, event_id = receipt.value.id))?;
+    let confirmed = (reconcile receipt against actual with EventMatches)?;
+    update state {
+      last_event = Some(confirmed.value);
+    }
+    return Ok(Unit);
+  }
+}

@@ -55,11 +55,11 @@ under `crates/aster-syntax/src`, plus syntax fixtures and tests.
 `format(&Module) -> String`, and serializable spanned AST types preserving
 comments and instruction block content.
 
-- [ ] Add lexer/parser failure tests with exact byte/line/column spans.
-- [ ] Observe failures for missing lexical and declaration grammar.
-- [ ] Implement tokens and recursive-descent declarations/expressions.
-- [ ] Add formatter idempotence, comment, and parse-format-parse tests.
-- [ ] Implement canonical formatting and run all syntax tests.
+- [x] Add lexer/parser failure tests with exact byte/line/column spans.
+- [x] Observe failures for missing lexical and declaration grammar.
+- [x] Implement tokens and recursive-descent declarations/expressions.
+- [x] Add formatter idempotence, comment, and parse-format-parse tests.
+- [x] Implement canonical formatting and run all syntax tests.
 
 ### Task 3: Static semantics and conformance
 
