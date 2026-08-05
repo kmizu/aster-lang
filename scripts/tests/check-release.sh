@@ -46,15 +46,92 @@ EOF
 
 cat >"$fixture_root/.github/workflows/release.yml" <<'EOF'
 name: Release v0.1.0
-assets:
-  - aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz
-  - aster-v0.1.0-aarch64-apple-darwin.tar.gz
-  - aster-v0.1.0-x86_64-apple-darwin.tar.gz
-  - aster-v0.1.0-x86_64-pc-windows-msvc.zip
-  - SHA256SUMS
+on:
+  push:
+    tags: ["v*"]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset: aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            asset: aster-v0.1.0-aarch64-apple-darwin.tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: aster-v0.1.0-x86_64-apple-darwin.tar.gz
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            asset: aster-v0.1.0-x86_64-pc-windows-msvc.zip
+    steps:
+      - uses: actions/upload-artifact@v4
+  publish:
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: sha256sum --check SHA256SUMS
+      - run: gh release create "$GITHUB_REF_NAME" dist/*
+EOF
+
+cat >"$fixture_root/.github/workflows/ci.yml" <<'EOF'
+name: CI
+permissions:
+  contents: read
+jobs:
+  check:
+    steps:
+      - run: sudo apt-get install --yes ripgrep
+EOF
+
+cat >"$fixture_root/.github/workflows/pages.yml" <<'EOF'
+name: Pages
+permissions:
+  contents: read
+jobs:
+  build:
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+  deploy:
+    needs: build
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/deploy-pages@v4
 EOF
 
 "$checker" "$fixture_root"
+
+unsafe_root="$fixture_root-unsafe"
+cp -R "$fixture_root" "$unsafe_root"
+trap 'rm -rf "$fixture_root" "$unsafe_root"' EXIT
+cat >>"$unsafe_root/.github/workflows/release.yml" <<'EOF'
+pull_request_target:
+EOF
+
+set +e
+unsafe_output=$("$checker" "$unsafe_root" 2>&1)
+unsafe_status=$?
+set -e
+
+if [[ $unsafe_status -eq 0 ]]; then
+  echo "release checker accepted pull_request_target" >&2
+  exit 1
+fi
+
+unsafe_expected="forbidden release workflow trigger: pull_request_target"
+if [[ "$unsafe_output" != *"$unsafe_expected"* ]]; then
+  echo "release checker did not identify the unsafe workflow trigger" >&2
+  echo "$unsafe_output" >&2
+  exit 1
+fi
 
 sed -i 's/version = "0.1.0"/version = "0.1.1"/' "$fixture_root/Cargo.toml"
 

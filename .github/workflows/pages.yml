@@ -1,0 +1,51 @@
+name: Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - site/**
+      - scripts/check-site.sh
+      - scripts/tests/check-site.sh
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install site check prerequisites
+        run: sudo apt-get update && sudo apt-get install --yes ripgrep
+      - name: Check site validator
+        run: ./scripts/tests/check-site.sh
+      - name: Check static site
+        run: ./scripts/check-site.sh
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
