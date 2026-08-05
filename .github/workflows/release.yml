@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and publish
+        required: true
+        default: v0.1.0
+        type: string
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 permissions:
   contents: read
@@ -13,6 +23,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - name: Install release check prerequisites
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - name: Require tag to match the workspace version
@@ -29,8 +41,8 @@ jobs:
               exit
             }
           ' Cargo.toml)
-          if [[ "$GITHUB_REF_NAME" != "v${version}" ]]; then
-            echo "tag $GITHUB_REF_NAME does not match workspace version $version" >&2
+          if [[ "$RELEASE_TAG" != "v${version}" ]]; then
+            echo "tag $RELEASE_TAG does not match workspace version $version" >&2
             exit 1
           fi
       - name: Check release contract
@@ -71,6 +83,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+      - name: Restore canonical checkout bytes on Windows
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          git config core.autocrlf false
+          git checkout-index --force --all
       - name: Install Linux musl toolchain
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install --yes musl-tools
@@ -85,6 +105,18 @@ jobs:
         run: cargo test --workspace --all-features --target ${{ matrix.target }}
       - name: Build release binary
         run: cargo build --release -p aster-cli --bin aster --target ${{ matrix.target }}
+      - name: Smoke-test Unix release binary
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          target/${{ matrix.target }}/release/aster --version
+          target/${{ matrix.target }}/release/aster check examples/meeting-scheduler/main.aster
+      - name: Smoke-test Windows release binary
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          target/${{ matrix.target }}/release/aster.exe --version
+          target/${{ matrix.target }}/release/aster.exe check examples/meeting-scheduler/main.aster
       - name: Stage release archive
         shell: bash
         run: |
@@ -115,6 +147,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
       - name: Download all release archives
         uses: actions/download-artifact@v4
         with:
@@ -162,8 +196,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          gh release create "$RELEASE_TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --title "ASTER $GITHUB_REF_NAME" \
+            --title "ASTER $RELEASE_TAG" \
             --notes-file docs/releases/v0.1.0.md \
             --verify-tag
