@@ -24,6 +24,31 @@ It intentionally excludes live provider integrations, arbitrary network or
 shell access, FFI, packages/imports, concurrency, loops, recursion,
 self-modification, distributed execution, and production key management.
 
+## ASTER v0.1.0
+
+The first release is available from the
+[ASTER project site](https://kmizu.github.io/aster-lang/) and the
+[GitHub Release](https://github.com/kmizu/aster-lang/releases/tag/v0.1.0).
+It provides command-line archives for Linux x86_64, macOS Apple Silicon,
+macOS Intel, and Windows x86_64. See the
+[v0.1.0 release notes](docs/releases/v0.1.0.md) for the implemented scope and
+limitations.
+
+Download `SHA256SUMS` with the archives and verify them before extraction:
+
+```bash
+sha256sum --check SHA256SUMS
+```
+
+The release binaries are unsigned. Checksums detect download corruption or
+substitution but do not establish publisher identity. To build the same CLI
+locally instead, use the pinned Rust toolchain:
+
+```bash
+cargo build --release -p aster-cli --bin aster
+./target/release/aster --version
+```
+
 ## Prerequisites and repository checks
 
 Install stable Rust 1.96 or allow `rustup` to install the pinned toolchain.
