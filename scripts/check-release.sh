@@ -42,6 +42,10 @@ workflow_files=(
 if rg --fixed-strings --quiet -- 'pull_request_target' "${workflow_files[@]}"; then
   fail "forbidden release workflow trigger: pull_request_target"
 fi
+if ! rg --fixed-strings --quiet -- 'workflow_dispatch:' \
+  "$repo_root/.github/workflows/release.yml"; then
+  fail "missing release recovery contract: workflow_dispatch"
+fi
 
 workspace_version=$(
   awk '
@@ -108,6 +112,11 @@ for contract in \
   'actions/upload-artifact@v4' \
   'actions/download-artifact@v4' \
   'contents: write' \
+  'RELEASE_TAG' \
+  'refs/tags/${{ env.RELEASE_TAG }}' \
+  'git checkout-index --force --all' \
+  'aster.exe --version' \
+  'aster.exe check examples/meeting-scheduler/main.aster' \
   'sha256sum --check SHA256SUMS' \
   'gh release create'; do
   require_text .github/workflows/release.yml "$contract"

@@ -49,6 +49,12 @@ name: Release v0.1.0
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 permissions:
   contents: read
 jobs:
@@ -69,6 +75,13 @@ jobs:
             target: x86_64-pc-windows-msvc
             asset: aster-v0.1.0-x86_64-pc-windows-msvc.zip
     steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ env.RELEASE_TAG }}
+      - run: git checkout-index --force --all
+      - run: cargo test --workspace --all-features
+      - run: aster.exe --version
+      - run: aster.exe check examples/meeting-scheduler/main.aster
       - uses: actions/upload-artifact@v4
   publish:
     permissions:
@@ -109,9 +122,30 @@ EOF
 
 "$checker" "$fixture_root"
 
+nonrecoverable_root="$fixture_root-nonrecoverable"
+cp -R "$fixture_root" "$nonrecoverable_root"
+sed -i '/workflow_dispatch:/d' "$nonrecoverable_root/.github/workflows/release.yml"
+
+set +e
+nonrecoverable_output=$("$checker" "$nonrecoverable_root" 2>&1)
+nonrecoverable_status=$?
+set -e
+
+if [[ $nonrecoverable_status -eq 0 ]]; then
+  echo "release checker accepted a workflow without tag recovery dispatch" >&2
+  exit 1
+fi
+
+nonrecoverable_expected="missing release recovery contract: workflow_dispatch"
+if [[ "$nonrecoverable_output" != *"$nonrecoverable_expected"* ]]; then
+  echo "release checker did not identify the missing recovery dispatch" >&2
+  echo "$nonrecoverable_output" >&2
+  exit 1
+fi
+
 unsafe_root="$fixture_root-unsafe"
 cp -R "$fixture_root" "$unsafe_root"
-trap 'rm -rf "$fixture_root" "$unsafe_root"' EXIT
+trap 'rm -rf "$fixture_root" "$nonrecoverable_root" "$unsafe_root"' EXIT
 cat >>"$unsafe_root/.github/workflows/release.yml" <<'EOF'
 pull_request_target:
 EOF
