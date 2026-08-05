@@ -41,7 +41,7 @@ aster-diagnostics <- aster-syntax <- aster-semantics <- aster-ir <- aster-runtim
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), the
 [normative specification](docs/spec/aster-0.1.md), and the
-[completed bootstrap plan](docs/exec-plans/completed/bootstrap-aster-0.1.md).
+[ASTER 0.1 completion plan](docs/exec-plans/completed/complete-aster-0.1.md).
 
 ## Meeting scheduler workflow
 

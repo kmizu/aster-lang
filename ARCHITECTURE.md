@@ -80,4 +80,4 @@ position before accepting one matching resolution.
 The full rationale is in
 [runtime-and-replay.md](docs/design-docs/runtime-and-replay.md). The
 implementation sequence and validation evidence are recorded in the
-[completed execution plan](docs/exec-plans/completed/bootstrap-aster-0.1.md).
+[completed execution plan](docs/exec-plans/completed/complete-aster-0.1.md).

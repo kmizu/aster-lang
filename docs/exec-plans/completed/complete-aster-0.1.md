@@ -68,7 +68,7 @@ In particular:
 - [x] M3: Affine values are sound across aliases and control-flow joins.
 - [x] M4: Every accepted construct lowers and executes deterministically.
 - [x] M5: Boundary schemas and all mandatory test obligations have direct tests.
-- [ ] M6: Documentation, full checks, record/replay demonstration, commit, and
+- [x] M6: Documentation, full checks, record/replay demonstration, commit, and
       push are complete.
 
 ## Task 1: Declaration and type well-formedness
@@ -169,19 +169,19 @@ In particular:
 
 ## Task 6: Documentation and final evidence
 
-- [ ] Update the normative spec, architecture, security/runtime docs,
+- [x] Update the normative spec, architecture, security/runtime docs,
       diagnostics reference, README, and this plan so every accepted/rejected
       behavior agrees with code.
-- [ ] Self-review the diff for placeholders, semantic shortcuts, secret
+- [x] Self-review the diff for placeholders, semantic shortcuts, secret
       leakage, nondeterminism, stale claims, and unrelated changes.
-- [ ] Move this plan to `docs/exec-plans/completed/` only after all earlier
+- [x] Move this plan to `docs/exec-plans/completed/` only after all earlier
       milestones are proven.
-- [ ] Run, after the final edit: `git diff --check`, `./scripts/check.sh`, the
+- [x] Run, after the final edit: `git diff --check`, `./scripts/check.sh`, the
       documented `aster check`, `run`, and `replay` commands, `cmp` on final
       states, and a representative JSON compile-fail command.
-- [ ] Inspect artifact permissions/ignore status and scan trace/snapshots/output
+- [x] Inspect artifact permissions/ignore status and scan trace/snapshots/output
       for the secret sentinel.
-- [ ] Commit the reviewed diff, push the branch, and report exact evidence and
+- [x] Commit the reviewed diff, push the branch, and report exact evidence and
       residual risks. Mark the persistent goal complete only if every item is
       proven.
 
@@ -370,7 +370,15 @@ checked. Safe direct-allow and human-approval paths are compile-pass fixtures.
   output states were mode `0600`; `.aster/` was ignored; no secret sentinel was
   present; and representative JSON compile-fail returned exit 1 with
   `ASTER-TYPE-2001` at the candidate projection span.
+- Implementation checkpoint `3c77f39` (`Seal ASTER boundary and scope
+  semantics`) was pushed to `origin/agent/complete-aster-0.1` after the
+  requirement audit and self-review.
+- Final `./scripts/check.sh` passed all formatter, clippy (`-D warnings`), 128
+  tests, doc tests, architecture, documentation, and forbidden-production-API
+  checks after the plan moved to `completed/`; `git diff --check` also passed.
 
 ## Known limitations
 
-- ASTER 0.1 is not complete while any milestone in this plan remains open.
+- ASTER 0.1 remains an experimental, fixture-driver reference processor. Live
+  providers, production key storage, packages, concurrency, arbitrary I/O, and
+  the other documented 0.1 non-goals remain intentionally out of scope.
