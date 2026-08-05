@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use aster_syntax::{
     AgentDeclaration, DeclarationKind, EnumDeclaration, FunctionDeclaration, Module,
-    PolicyDeclaration, PromptDeclaration, ToolDeclaration, TypeDeclaration, TypeDefinition,
-    TypeReference, ValidatorDeclaration,
+    PolicyDeclaration, PromptDeclaration, SignatureDeclaration, ToolDeclaration, TypeDeclaration,
+    TypeDefinition, TypeReference, ValidatorDeclaration,
 };
 
 use crate::Type;
@@ -12,6 +12,7 @@ pub(crate) struct Model<'a> {
     pub(crate) module: &'a Module,
     pub(crate) types: BTreeMap<String, &'a TypeDeclaration>,
     pub(crate) enums: BTreeMap<String, &'a EnumDeclaration>,
+    pub(crate) capabilities: BTreeMap<String, &'a SignatureDeclaration>,
     pub(crate) prompts: BTreeMap<String, &'a PromptDeclaration>,
     pub(crate) validators: BTreeMap<String, &'a ValidatorDeclaration>,
     pub(crate) functions: BTreeMap<String, &'a FunctionDeclaration>,
@@ -27,6 +28,7 @@ impl<'a> Model<'a> {
             module,
             types: BTreeMap::new(),
             enums: BTreeMap::new(),
+            capabilities: BTreeMap::new(),
             prompts: BTreeMap::new(),
             validators: BTreeMap::new(),
             functions: BTreeMap::new(),
@@ -43,7 +45,12 @@ impl<'a> Model<'a> {
                 DeclarationKind::Enum(value) => {
                     model.enums.entry(value.name.clone()).or_insert(value);
                 }
-                DeclarationKind::Capability(_) => {}
+                DeclarationKind::Capability(value) => {
+                    model
+                        .capabilities
+                        .entry(value.name.clone())
+                        .or_insert(value);
+                }
                 DeclarationKind::Prompt(value) => {
                     model.prompts.entry(value.name.clone()).or_insert(value);
                 }
