@@ -100,16 +100,7 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
                 self.expect_type(&Type::Bool, &actual, &condition.span);
             }
             StatementKind::UpdateState { fields } => {
-                if let Some(agent) = &context.agent {
-                    for field in fields {
-                        let actual = self.check_expression(&field.value, environment, context);
-                        let expected = self
-                            .model
-                            .field_type(&Type::AgentState(agent.clone()), &field.name)
-                            .unwrap_or(Type::Unknown);
-                        self.expect_type(&expected, &actual, &field.value.span);
-                    }
-                }
+                self.check_state_update(fields, environment, context);
             }
             StatementKind::Return { value } => {
                 let actual = self.check_expression(value, environment, context);
@@ -121,6 +112,57 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
             StatementKind::Expression { expression } => {
                 self.check_expression(expression, environment, context);
             }
+        }
+    }
+
+    fn check_state_update(
+        &mut self,
+        fields: &[aster_syntax::FieldInitializer],
+        environment: &mut Environment,
+        context: &CheckContext,
+    ) {
+        let Some(agent_name) = &context.agent else {
+            for field in fields {
+                self.check_expression(&field.value, environment, context);
+            }
+            if let Some(field) = fields.first() {
+                self.type_mismatch(
+                    "state can be updated only inside an agent handler",
+                    &field.span,
+                );
+            }
+            return;
+        };
+        let Some(agent) = self.model.agents.get(agent_name) else {
+            return;
+        };
+        let mut seen = BTreeSet::new();
+        for field in fields {
+            let actual = self.check_expression(&field.value, environment, context);
+            if !seen.insert(field.name.as_str()) {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        KnownDiagnosticCode::DuplicateDeclaration.into(),
+                        format!("state field `{}` is updated more than once", field.name),
+                        field.span.clone(),
+                    )
+                    .with_help("update each state field at most once per transaction"),
+                );
+            }
+            let Some(declaration) = agent.state.iter().find(|value| value.name == field.name)
+            else {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        KnownDiagnosticCode::UnknownName.into(),
+                        format!("unknown mutable state field `{}`", field.name),
+                        field.span.clone(),
+                    )
+                    .with_help("update a field declared in the agent state block"),
+                );
+                continue;
+            };
+            let expected = self.model.resolve_type(&declaration.ty);
+            self.expect_type(&expected, &actual, &field.value.span);
         }
     }
 
@@ -379,12 +421,20 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
         let mut result = Type::Unknown;
         let mut covered = BTreeSet::new();
         let mut wildcard = false;
+        let mut invalid_pattern = false;
         let mut arm_environments = Vec::new();
         for arm in arms {
             let mut arm_environment = environment.clone();
+            if wildcard {
+                self.type_mismatch("match arm after wildcard is unreachable", &arm.span);
+            }
             match &arm.pattern {
                 Pattern::Wildcard => wildcard = true,
                 Pattern::Variant { path, binding } => {
+                    if !self.pattern_belongs_to(path, &enum_name) {
+                        invalid_pattern = true;
+                        continue;
+                    }
                     let variant = path.segments.last().map(String::as_str).unwrap_or_default();
                     let Some(payload) = variants.get(variant) else {
                         self.diagnostics.push(
@@ -395,6 +445,7 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
                             )
                             .with_help("use a variant of the matched type"),
                         );
+                        invalid_pattern = true;
                         continue;
                     };
                     if !covered.insert(variant.to_owned()) {
@@ -432,7 +483,7 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
             }
             arm_environments.push(arm_environment);
         }
-        if !wildcard {
+        if !wildcard && !invalid_pattern {
             let missing = variants
                 .keys()
                 .filter(|variant| !covered.contains(*variant))
@@ -451,6 +502,28 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
         }
         environment.join_moved(&arm_environments);
         result
+    }
+
+    fn pattern_belongs_to(&mut self, path: &Path, enum_name: &str) -> bool {
+        let qualifier = path
+            .segments
+            .get(..path.segments.len().saturating_sub(1))
+            .unwrap_or_default();
+        if qualifier.is_empty() || (qualifier.len() == 1 && qualifier[0] == enum_name) {
+            return true;
+        }
+        self.diagnostics.push(
+            Diagnostic::error(
+                KnownDiagnosticCode::UnknownName.into(),
+                format!(
+                    "pattern `{}` does not belong to `{enum_name}`",
+                    path.as_string()
+                ),
+                path.span.clone(),
+            )
+            .with_help("use a variant of the matched type"),
+        );
+        false
     }
 
     fn match_variants(&self, ty: &Type) -> Option<(BTreeMap<String, Option<Type>>, String)> {
@@ -574,13 +647,32 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
             ("first", [Type::List(inner)]) => Type::Result(inner.clone(), Box::new(Type::Error)),
             ("contains", [Type::List(inner), value]) => {
                 self.expect_type(inner, value, span);
+                if !self.is_equatable(inner, &mut BTreeSet::new()) {
+                    self.type_mismatch("contains requires equatable list elements", span);
+                }
                 Type::Bool
             }
             ("subset", [Type::List(left), Type::List(right)]) => {
                 self.expect_type(left, right, span);
+                if !self.is_equatable(left, &mut BTreeSet::new()) {
+                    self.type_mismatch("subset requires equatable list elements", span);
+                }
                 Type::Bool
             }
-            ("provenance", [_]) => Type::ProvenanceRef,
+            ("provenance", [value])
+                if matches!(
+                    self.model.normalized(value),
+                    Type::Incoming(_)
+                        | Type::Untrusted(_)
+                        | Type::Candidate(_)
+                        | Type::Checked(_)
+                        | Type::Observation(_)
+                        | Type::Receipt(_)
+                        | Type::Reconciled(_)
+                ) =>
+            {
+                Type::ProvenanceRef
+            }
             ("add_seconds", [instant, seconds]) => {
                 self.expect_type(&Type::Instant, instant, span);
                 self.expect_type(&Type::Int, seconds, span);
@@ -1111,11 +1203,9 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
         };
         let mut ty = if let Some(binding) = environment.get(first) {
             if binding.moved {
-                let code = match &binding.ty {
-                    Type::Permit(_) => KnownDiagnosticCode::PermitUseAfterMove,
-                    Type::Proposal(_) => KnownDiagnosticCode::ProposalUseAfterMove,
-                    _ => KnownDiagnosticCode::TypeMismatch,
-                };
+                let code = self
+                    .affine_diagnostic_code(&binding.ty, &mut BTreeSet::new())
+                    .unwrap_or(KnownDiagnosticCode::TypeMismatch);
                 self.diagnostics.push(
                     Diagnostic::error(
                         code.into(),
@@ -1217,8 +1307,17 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
     }
 
     fn is_affine(&self, ty: &Type, seen: &mut BTreeSet<String>) -> bool {
+        self.affine_diagnostic_code(ty, seen).is_some()
+    }
+
+    fn affine_diagnostic_code(
+        &self,
+        ty: &Type,
+        seen: &mut BTreeSet<String>,
+    ) -> Option<KnownDiagnosticCode> {
         match self.model.normalized(ty) {
-            Type::Proposal(_) | Type::Permit(_) => true,
+            Type::Proposal(_) => Some(KnownDiagnosticCode::ProposalUseAfterMove),
+            Type::Permit(_) => Some(KnownDiagnosticCode::PermitUseAfterMove),
             Type::Option(inner)
             | Type::List(inner)
             | Type::Incoming(inner)
@@ -1226,26 +1325,42 @@ impl<'a, 'm> ExpressionChecker<'a, 'm> {
             | Type::Candidate(inner)
             | Type::Checked(inner)
             | Type::Observation(inner)
-            | Type::Secret(inner) => self.is_affine(&inner, seen),
-            Type::Result(ok, error) => self.is_affine(&ok, seen) || self.is_affine(&error, seen),
+            | Type::Secret(inner) => self.affine_diagnostic_code(&inner, seen),
+            Type::Result(ok, error) => self
+                .affine_diagnostic_code(&ok, seen)
+                .or_else(|| self.affine_diagnostic_code(&error, seen)),
             Type::Named(name) => {
                 if !seen.insert(name.clone()) {
-                    return false;
+                    return None;
                 }
-                let result = self.model.types.get(&name).is_some_and(|declaration| {
-                    match &declaration.definition {
+                let result = self
+                    .model
+                    .types
+                    .get(&name)
+                    .and_then(|declaration| match &declaration.definition {
                         TypeDefinition::Alias(reference) => {
-                            self.is_affine(&self.model.resolve_type(reference), seen)
+                            self.affine_diagnostic_code(&self.model.resolve_type(reference), seen)
                         }
-                        TypeDefinition::Record(fields) => fields
-                            .iter()
-                            .any(|field| self.is_affine(&self.model.resolve_type(&field.ty), seen)),
-                    }
-                });
+                        TypeDefinition::Record(fields) => fields.iter().find_map(|field| {
+                            self.affine_diagnostic_code(&self.model.resolve_type(&field.ty), seen)
+                        }),
+                    })
+                    .or_else(|| {
+                        self.model.enums.get(&name).and_then(|declaration| {
+                            declaration.variants.iter().find_map(|variant| {
+                                variant.payload.as_ref().and_then(|payload| {
+                                    self.affine_diagnostic_code(
+                                        &self.model.resolve_type(payload),
+                                        seen,
+                                    )
+                                })
+                            })
+                        })
+                    });
                 seen.remove(&name);
                 result
             }
-            _ => false,
+            _ => None,
         }
     }
 

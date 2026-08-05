@@ -84,6 +84,32 @@ fn malformed_declaration_reports_the_unexpected_token_span() {
 }
 
 #[test]
+fn duplicate_tool_metadata_is_rejected_instead_of_overwritten() {
+    let source = SourceFile::new(
+        "duplicate-tool-metadata.aster",
+        r"module duplicate;
+tool A.one() -> Unit { mode read; mode write; }
+tool A.two() -> Unit { capability C(); capability C(); }
+tool A.three() -> Unit { sensitivity public; sensitivity private; }
+tool A.four() -> Unit { risk reversible; risk irreversible; }
+tool A.five() -> Unit { idempotency first; idempotency second; }",
+    );
+    let diagnostics = parse(&source).expect_err("duplicate metadata must fail parsing");
+
+    assert_eq!(diagnostics.len(), 5);
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code.as_str() == "ASTER-PARSE-0001")
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.message.contains("duplicate tool metadata"))
+    );
+}
+
+#[test]
 fn parser_recovers_at_declaration_boundaries_and_reports_errors_in_source_order() {
     // Catches fail-fast parsing that hides independent errors from one check run.
     let source = SourceFile::new(

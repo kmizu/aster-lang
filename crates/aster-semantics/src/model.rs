@@ -192,6 +192,81 @@ impl<'a> Model<'a> {
         self.contains_secret_with_seen(ty, &mut BTreeSet::new())
     }
 
+    pub(crate) fn is_deterministically_serializable(&self, ty: &Type) -> bool {
+        self.is_deterministically_serializable_with_seen(ty, &mut BTreeSet::new())
+    }
+
+    fn is_deterministically_serializable_with_seen(
+        &self,
+        ty: &Type,
+        seen: &mut BTreeSet<String>,
+    ) -> bool {
+        match self.normalized(ty) {
+            Type::Unit
+            | Type::Bool
+            | Type::Int
+            | Type::Text
+            | Type::Instant
+            | Type::Duration
+            | Type::ProvenanceRef
+            | Type::Error => true,
+            Type::Option(inner)
+            | Type::List(inner)
+            | Type::Incoming(inner)
+            | Type::Untrusted(inner)
+            | Type::Checked(inner)
+            | Type::Observation(inner) => {
+                self.is_deterministically_serializable_with_seen(&inner, seen)
+            }
+            Type::Result(ok, error) => {
+                self.is_deterministically_serializable_with_seen(&ok, seen)
+                    && self.is_deterministically_serializable_with_seen(&error, seen)
+            }
+            Type::Named(name) => {
+                if !seen.insert(name.clone()) {
+                    return false;
+                }
+                let result = self.types.get(&name).is_some_and(|declaration| {
+                    match &declaration.definition {
+                        TypeDefinition::Alias(reference) => self
+                            .is_deterministically_serializable_with_seen(
+                                &self.resolve_type(reference),
+                                seen,
+                            ),
+                        TypeDefinition::Record(fields) => fields.iter().all(|field| {
+                            self.is_deterministically_serializable_with_seen(
+                                &self.resolve_type(&field.ty),
+                                seen,
+                            )
+                        }),
+                    }
+                }) || self.enums.get(&name).is_some_and(|declaration| {
+                    declaration.variants.iter().all(|variant| {
+                        variant.payload.as_ref().is_none_or(|payload| {
+                            self.is_deterministically_serializable_with_seen(
+                                &self.resolve_type(payload),
+                                seen,
+                            )
+                        })
+                    })
+                });
+                seen.remove(&name);
+                result
+            }
+            Type::Unknown
+            | Type::Candidate(_)
+            | Type::Secret(_)
+            | Type::Intent(_)
+            | Type::Proposal(_)
+            | Type::Permit(_)
+            | Type::Receipt(_)
+            | Type::Reconciled(_)
+            | Type::ToolArguments(_)
+            | Type::AgentState(_)
+            | Type::Event => false,
+        }
+    }
+
     fn contains_secret_with_seen(&self, ty: &Type, seen: &mut BTreeSet<String>) -> bool {
         match ty {
             Type::Secret(_) => true,

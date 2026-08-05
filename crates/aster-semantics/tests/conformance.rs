@@ -60,6 +60,35 @@ tool Store.put(id: Text) -> Text {
 }
 
 #[test]
+fn write_idempotency_requires_a_deterministically_serializable_type() {
+    let codes = diagnostic_codes(
+        r#"module test;
+capability StoreWrite(scope: Text);
+tool Store.put(value: Candidate<Text>) -> Unit {
+  mode write;
+  capability StoreWrite("scope");
+  sensitivity private;
+  risk irreversible;
+  idempotency value;
+}"#,
+    );
+
+    assert_eq!(codes, ["ASTER-TYPE-2004"]);
+
+    assert_checks(
+        r#"module test;
+capability StoreWrite(scope: Text);
+tool Store.put(request_id: Int) -> Unit {
+  mode write;
+  capability StoreWrite("scope");
+  sensitivity private;
+  risk irreversible;
+  idempotency request_id;
+}"#,
+    );
+}
+
+#[test]
 fn cyclic_type_aliases_are_rejected() {
     let codes = diagnostic_codes("module test; type First = Second; type Second = First;");
 
@@ -330,6 +359,27 @@ fn ordering_requires_integers_and_collection_builtins_are_homogeneous() {
 }
 
 #[test]
+fn provenance_and_collection_search_require_supported_value_types() {
+    let provenance = diagnostic_codes(
+        "module test; fn bad(value: Int) -> ProvenanceRef { return provenance(value); }",
+    );
+    let contains = diagnostic_codes(
+        "module test; fn bad(values: List<Candidate<Text>>, value: Candidate<Text>) -> Bool { return contains(values, value); }",
+    );
+    let subset = diagnostic_codes(
+        "module test; fn bad(left: List<Candidate<Text>>, right: List<Candidate<Text>>) -> Bool { return subset(left, right); }",
+    );
+
+    assert_eq!(provenance, ["ASTER-TYPE-2002"]);
+    assert_eq!(contains, ["ASTER-TYPE-2002"]);
+    assert_eq!(subset, ["ASTER-TYPE-2002"]);
+
+    assert_checks(
+        "module test; fn source(value: Incoming<Text>) -> ProvenanceRef { return provenance(value); }",
+    );
+}
+
+#[test]
 fn enum_match_binds_payload_and_is_exhaustive() {
     assert_checks(
         r"module test;
@@ -347,6 +397,58 @@ fn value(choice: Choice) -> Int {
 }",
     );
     assert_eq!(non_exhaustive, ["ASTER-TYPE-2002"]);
+}
+
+#[test]
+fn match_patterns_belong_to_the_scrutinee_type_and_wildcard_is_final() {
+    let wrong_qualifier = diagnostic_codes(
+        r"module test;
+enum Choice { First, Other(Int) }
+fn value(choice: Choice) -> Int {
+  return match choice { Wrong.First => 0, Choice.Other(value) => value };
+}",
+    );
+    let unreachable = diagnostic_codes(
+        r"module test;
+enum Choice { First, Other(Int) }
+fn value(choice: Choice) -> Int {
+  return match choice { _ => 0, Choice.First => 1 };
+}",
+    );
+    let duplicate_wildcard = diagnostic_codes(
+        r"module test;
+enum Choice { First, Other(Int) }
+fn value(choice: Choice) -> Int {
+  return match choice { _ => 0, _ => 1 };
+}",
+    );
+
+    assert_eq!(wrong_qualifier, ["ASTER-NAME-1001"]);
+    assert_eq!(unreachable, ["ASTER-TYPE-2002"]);
+    assert_eq!(duplicate_wildcard, ["ASTER-TYPE-2002"]);
+}
+
+#[test]
+fn option_and_result_matches_bind_payloads_exactly() {
+    assert_checks(
+        r"module test;
+fn from_option(value: Option<Int>) -> Int {
+  return match value { None => 0, Some(number) => number };
+}
+fn from_result(value: Result<Int, Error>) -> Int {
+  return match value { Ok(number) => number, Err(error) => 0 };
+}",
+    );
+
+    let escaped = diagnostic_codes(
+        r"module test;
+enum Choice { First, Other(Int) }
+fn value(choice: Choice) -> Int {
+  let selected = match choice { Choice.First => 0, Choice.Other(payload) => payload };
+  return payload;
+}",
+    );
+    assert_eq!(escaped, ["ASTER-NAME-1001"]);
 }
 
 #[test]
@@ -522,6 +624,30 @@ fn executable_bodies_require_an_explicit_return() {
     assert_eq!(codes, ["ASTER-TYPE-2002"]);
 }
 
+#[test]
+fn state_updates_are_handler_only_and_name_each_mutable_field_once() {
+    let outside_handler = diagnostic_codes(
+        "module test; fn bad() -> Unit { update state { missing = 1; } return Unit; }",
+    );
+    let fields = diagnostic_codes(
+        r#"module test;
+agent Worker(owner: Text) requires [] {
+  state { count: Int = 0; }
+  budget per_event {}
+  on tick() -> Result<Unit, Error> {
+    update state { count = 1; count = 2; missing = 3; owner = "changed"; }
+    return Ok(Unit);
+  }
+}"#,
+    );
+
+    assert_eq!(outside_handler, ["ASTER-TYPE-2002"]);
+    assert_eq!(
+        fields,
+        ["ASTER-NAME-1002", "ASTER-NAME-1001", "ASTER-NAME-1001"]
+    );
+}
+
 fn affine_prelude(body: &str) -> String {
     format!(
         r"module test;
@@ -576,6 +702,50 @@ fn affine_consumption_is_joined_across_if_branches() {
     let codes = diagnostic_codes(&source);
 
     assert_eq!(codes, ["ASTER-AFFINE-5002"]);
+}
+
+#[test]
+fn affine_values_move_through_calls_and_nested_containers() {
+    let through_call = affine_prelude(
+        r"fn consume(proposal: Proposal<Store.put>) -> Unit { return Unit; }
+flow bad(proposal: Proposal<Store.put>) -> Unit uses [] {
+  consume(proposal);
+  let reused = proposal.args.id;
+  return Unit;
+}",
+    );
+    let nested = affine_prelude(
+        r"flow bad(proposal: Proposal<Store.put>) -> Unit uses [] {
+  let proposals = [proposal];
+  let moved = proposals;
+  let reused = proposals;
+  return Unit;
+}",
+    );
+
+    assert_eq!(diagnostic_codes(&through_call), ["ASTER-AFFINE-5002"]);
+    assert_eq!(diagnostic_codes(&nested), ["ASTER-AFFINE-5002"]);
+}
+
+#[test]
+fn affine_consumption_is_joined_across_match_arms() {
+    let source = affine_prelude(
+        r"enum Choice { Use, Skip }
+fn consume(proposal: Proposal<Store.put>) -> Unit { return Unit; }
+flow bad(
+  choice: Choice,
+  proposal: Proposal<Store.put>
+) -> Unit uses [] {
+  match choice {
+    Choice.Use => consume(proposal),
+    Choice.Skip => Unit
+  };
+  let reused = proposal.args.id;
+  return Unit;
+}",
+    );
+
+    assert_eq!(diagnostic_codes(&source), ["ASTER-AFFINE-5002"]);
 }
 
 #[test]

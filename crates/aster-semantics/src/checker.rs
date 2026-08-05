@@ -577,7 +577,7 @@ fn check_declaration_metadata(
                 );
             }
             DeclarationKind::Tool(tool) => {
-                check_tool_metadata(tool, &declaration.span, diagnostics);
+                check_tool_metadata(tool, &declaration.span, model, diagnostics);
             }
             DeclarationKind::Policy(policy)
                 if policy
@@ -653,6 +653,7 @@ fn check_policy_signature(
 fn check_tool_metadata(
     tool: &ToolDeclaration,
     declaration_span: &aster_diagnostics::Span,
+    model: &Model<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     if tool.metadata.mode.is_none() {
@@ -692,7 +693,26 @@ fn check_tool_metadata(
                     .with_help("name one of the write tool's declared parameters"),
                 );
             }
-            Some(_) => {}
+            Some(name) => {
+                let parameter = tool
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.name == name);
+                if parameter.is_some_and(|parameter| {
+                    !model.is_deterministically_serializable(&model.resolve_type(&parameter.ty))
+                }) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            KnownDiagnosticCode::MissingIdempotency.into(),
+                            format!(
+                                "idempotency parameter `{name}` is not deterministically serializable"
+                            ),
+                            declaration_span.clone(),
+                        )
+                        .with_help("use an ordinary deterministic data value as the key"),
+                    );
+                }
+            }
         }
     } else if tool.metadata.mode == Some(ToolMode::Read) {
         if tool.metadata.risk.is_some() {

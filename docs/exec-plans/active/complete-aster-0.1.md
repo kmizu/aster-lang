@@ -225,6 +225,18 @@ In particular:
   validator references instead of silently accepting `Type::Unknown`.
   Reconciliation now requires a declared two-parameter validator and checks
   both declared parameter types against the receipt result and observation.
+- 2026-08-06: Closed additional expression and state gaps: match patterns now
+  verify their enum qualifier, reject arms after a wildcard, and directly
+  cover `Option`/`Result` payload binding; provenance and collection search
+  enforce their supported/equatable domains; state updates are handler-only
+  and may update each declared mutable state field at most once.
+- 2026-08-06: Made idempotency metadata match its specified type contract.
+  The checker rejects opaque/non-serializable key types, while the VM retains
+  text keys verbatim and canonicalizes other serializable JSON keys. A focused
+  runtime test proves an integer key reaches the write boundary.
+- 2026-08-06: Duplicate tool metadata now fails in the parser rather than
+  silently overwriting the earlier entry. Affine diagnostics and move joins
+  now cover calls, match arms, nested containers, records, and enum payloads.
 
 ## Discoveries and deviations
 
@@ -250,11 +262,11 @@ In particular:
   fixtures.
 - Source audit of `checker.rs`, `expression.rs`, `model.rs`, and `lowering.rs`:
   exposed the static-semantic gaps recorded above.
-- `cargo test -p aster-semantics --test conformance`: 38 passed after the
-  declaration, expression, initial affine, capability, secret-placement, and
-  effect-reference TDD cycles.
-- `cargo test --workspace --all-features`: passed with 97 tests after the
-  checkpoint changes.
+- `cargo test -p aster-semantics --test conformance`: 45 passed after the
+  declaration, expression, affine, capability, secret-placement, pattern,
+  state-update, provenance, and effect-reference TDD cycles.
+- `cargo test --workspace --all-features`: passed with 106 tests after the
+  second checkpoint changes.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
   passed after splitting record/list checking out of the expression dispatcher.
 - `git diff --check`: passed at the checkpoint.

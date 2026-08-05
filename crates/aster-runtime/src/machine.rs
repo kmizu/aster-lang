@@ -11,7 +11,8 @@ use thiserror::Error;
 use crate::capability::CompiledGrants;
 use crate::{
     AuthorityLedger, Budget, BudgetDimension, CapabilityGrants, Intent, Proposal, ProposalMetadata,
-    ProvenancedValue, ReceiptValue, Reservation, RuntimeValue, canonical_sha256, snapshot_values,
+    ProvenancedValue, ReceiptValue, Reservation, RuntimeValue, canonical_json, canonical_sha256,
+    snapshot_values,
 };
 
 /// Validated inputs needed to start one agent event.
@@ -1033,10 +1034,16 @@ impl Machine {
             .into_iter()
             .collect();
         let idempotency_name = tool.idempotency.ok_or(MachineError::MissingIdempotency)?;
-        let idempotency_key = arguments_json
+        let idempotency_value = arguments_json
             .get(&idempotency_name)
-            .and_then(JsonValue::as_str)
             .ok_or(MachineError::MissingIdempotency)?;
+        let idempotency_key = idempotency_value.as_str().map_or_else(
+            || {
+                canonical_json(idempotency_value)
+                    .map_err(|error| MachineError::Serialization(error.to_string()))
+            },
+            |value| Ok(value.to_owned()),
+        )?;
         let capability_request =
             self.capability_request_json(tool.capability.as_ref(), &arguments_map)?;
         self.require_capability(&capability_request)?;
@@ -1050,7 +1057,7 @@ impl Machine {
                 risk,
                 sensitivity,
                 capability_request,
-                idempotency_key: idempotency_key.to_owned(),
+                idempotency_key,
                 program_hash: self.program.program_hash.clone(),
             },
         )

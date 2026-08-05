@@ -335,6 +335,9 @@ impl Parser<'_> {
         while !self.check_symbol(Symbol::RightBrace) {
             match self.current().kind {
                 TokenKind::Keyword(Keyword::Mode) => {
+                    if metadata.mode.is_some() {
+                        return Err(self.duplicate_tool_metadata("mode"));
+                    }
                     self.advance();
                     metadata.mode = Some(match self.advance().kind {
                         TokenKind::Keyword(Keyword::Read) => ToolMode::Read,
@@ -343,10 +346,16 @@ impl Parser<'_> {
                     });
                 }
                 TokenKind::Keyword(Keyword::Capability) => {
+                    if metadata.capability.is_some() {
+                        return Err(self.duplicate_tool_metadata("capability"));
+                    }
                     self.advance();
                     metadata.capability = Some(self.parse_capability_expression()?);
                 }
                 TokenKind::Keyword(Keyword::Sensitivity) => {
+                    if metadata.sensitivity.is_some() {
+                        return Err(self.duplicate_tool_metadata("sensitivity"));
+                    }
                     self.advance();
                     metadata.sensitivity = Some(match self.advance().kind {
                         TokenKind::Keyword(Keyword::Public) => Sensitivity::Public,
@@ -357,6 +366,9 @@ impl Parser<'_> {
                     });
                 }
                 TokenKind::Keyword(Keyword::Risk) => {
+                    if metadata.risk.is_some() {
+                        return Err(self.duplicate_tool_metadata("risk"));
+                    }
                     self.advance();
                     metadata.risk = Some(match self.advance().kind {
                         TokenKind::Keyword(Keyword::Reversible) => Risk::Reversible,
@@ -365,6 +377,9 @@ impl Parser<'_> {
                     });
                 }
                 TokenKind::Keyword(Keyword::Idempotency) => {
+                    if metadata.idempotency.is_some() {
+                        return Err(self.duplicate_tool_metadata("idempotency"));
+                    }
                     self.advance();
                     metadata.idempotency = Some(self.expect_identifier()?.0);
                 }
@@ -1199,6 +1214,25 @@ impl Parser<'_> {
             )
             .with_note(format!("while parsing {}", self.source.path()))
             .with_help(format!("replace this token with {expected}")),
+        )
+    }
+
+    fn duplicate_tool_metadata(&mut self, name: &str) -> Box<Diagnostic> {
+        let span = self.current().span.clone();
+        while !self.check_kind(&TokenKind::Eof) && !self.check_symbol(Symbol::RightBrace) {
+            self.advance();
+        }
+        if self.check_symbol(Symbol::RightBrace) {
+            self.advance();
+        }
+        Box::new(
+            Diagnostic::error(
+                KnownDiagnosticCode::ParseError.into(),
+                format!("duplicate tool metadata `{name}`"),
+                span,
+            )
+            .with_note(format!("while parsing {}", self.source.path()))
+            .with_help(format!("keep exactly one `{name}` metadata entry")),
         )
     }
 

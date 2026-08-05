@@ -109,6 +109,66 @@ fn direct_allow_write_path_never_yields_approval() {
 }
 
 #[test]
+fn serializable_non_text_idempotency_reaches_the_write_boundary() {
+    let source = SourceFile::new(
+        "integer-idempotency.aster",
+        r#"module integer_idempotency;
+capability Write(owner: Text);
+tool Store.put(owner: Text, request_id: Int) -> Unit {
+  mode write;
+  capability Write(owner);
+  sensitivity private;
+  risk irreversible;
+  idempotency request_id;
+}
+policy Direct(proposal: Proposal<Store.put>) {
+  allow when true;
+  deny "denied" otherwise;
+}
+agent Writer(owner: Text) requires [Write(owner)] {
+  state {}
+  budget per_event { external_writes <= 1; }
+  on message(msg: Incoming<Int>) -> Result<Unit, Error> {
+    let purpose = intent Save { actor = self; beneficiary = self; basis = [provenance(msg)]; expected = "saved"; expires_at = event.time; };
+    let proposal = propose Store.put(owner = owner, request_id = msg.value) for purpose;
+    let permit = (authorize proposal using Direct)?;
+    let receipt = (commit proposal with permit)?;
+    return Ok(Unit);
+  }
+}
+"#,
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "Writer".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
+            payload: json!(42),
+            state: BTreeMap::new(),
+            capabilities: grants(&[("Write", json!("user-001"))]),
+        },
+    )
+    .expect("machine starts");
+
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(effect) => {
+                assert_eq!(effect.kind, EffectKind::Write);
+                assert_eq!(effect.payload["arguments"]["request_id"], json!(42));
+                break;
+            }
+            Step::Completed(_) => panic!("write effect was skipped"),
+            Step::Failed(error) => panic!("machine failed before write: {error}"),
+        }
+    }
+}
+
+#[test]
 fn meeting_scheduler_runs_full_approval_and_reconciliation_path() {
     // Catches example-specialized shortcuts and missing governed stages.
     let program = checked_program("examples/meeting-scheduler/main.aster");
