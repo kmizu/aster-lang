@@ -12,7 +12,7 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
 - [x] M2: Lexer, parser, lossless comments, AST JSON, and canonical formatter.
 - [x] M3: Names, types, wrappers, purity/effects, capabilities, affine analysis,
       recursion rejection, persistence checks, and conformance fixtures.
-- [ ] M4: Typed serializable IR and the meeting scheduler lowering path.
+- [x] M4: Typed serializable IR and the meeting scheduler lowering path.
 - [ ] M5: Deterministic VM, fixtures, budgets, capabilities, proposals, permits,
       commit, reconciliation, atomic state, trace, and snapshots.
 - [ ] M6: Replay and resume with tamper/divergence validation and zero drivers.
@@ -65,6 +65,11 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   persistence restrictions, and secret-to-model rejection. All mandatory
   compile-fail fixtures now assert a stable code and relevant source span; the
   meeting scheduler and a direct-allow governed-write fixture compile.
+- 2026-08-05: Added versioned typed IR with stable value/instruction identities,
+  explicit routine calls and branches, pending state updates, and distinct
+  inference/observation/validation/intent/proposal/authorization/commit/
+  reconciliation instructions. The meeting scheduler lowers without hidden AST
+  effect evaluation, and IR JSON validates its content hash on read.
 
 ## Discoveries and deviations
 
@@ -97,6 +102,9 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   21 unsafe fixtures plus meeting-scheduler and direct-allow pass programs.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
   passed with the complete static-semantics layer enabled.
+- `cargo test -p aster-ir --test lowering`: 3 tests passed for stable identity
+  and JSON round-trip, explicit meeting governance order, and control-flow
+  branch targets.
 
 ## Known limitations
 

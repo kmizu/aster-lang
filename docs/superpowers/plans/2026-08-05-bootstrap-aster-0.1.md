@@ -86,11 +86,11 @@ program hashing, and lowering modules under `aster-ir`.
 serializable frames/locals, explicit state delta operations, and explicit
 external effect suspension instructions.
 
-- [ ] Add IR round-trip, stable-ID, and no-hidden-effect tests.
-- [ ] Confirm tests fail against missing IR/lowering.
-- [ ] Implement IR domain types and lower checked programs.
-- [ ] Lower the bundled scheduler and assert its ordered effect points.
-- [ ] Run IR and upstream test suites.
+- [x] Add IR round-trip, stable-ID, and no-hidden-effect tests.
+- [x] Confirm tests fail against missing IR/lowering.
+- [x] Implement IR domain types and lower checked programs.
+- [x] Lower the bundled scheduler and assert its ordered effect points.
+- [x] Run IR and upstream test suites.
 
 ### Task 5: Deterministic runtime and recording
 
