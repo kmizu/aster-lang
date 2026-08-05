@@ -468,11 +468,11 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
 enum CliError {
     #[error("{0}")]
     Source(String),
-    #[error("runtime failure: {0}")]
+    #[error("ASTER-RUNTIME-9001: runtime failure: {0}")]
     Runtime(String),
-    #[error("replay failure: {0}")]
+    #[error("ASTER-REPLAY-10001: replay failure: {0}")]
     Replay(String),
-    #[error("internal failure: {0}")]
+    #[error("ASTER-INTERNAL-9901: internal failure: {0}")]
     Internal(String),
     #[error("I/O failure: {0}")]
     Io(#[from] std::io::Error),

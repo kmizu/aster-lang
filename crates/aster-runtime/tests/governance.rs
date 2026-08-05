@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use aster_runtime::{
-    AuthorityError, AuthorityLedger, Budget, BudgetDimension, BudgetError, Intent, Proposal,
-    RuntimeValue, SnapshotError, Trace, TraceError, canonical_json,
+    AuthorityError, AuthorityLedger, Budget, BudgetDimension, BudgetError, DriverError,
+    EffectDriver, EffectKind, EffectRequest, FixtureDriver, FixtureEntry, FixtureSet, Intent,
+    Proposal, RuntimeValue, SnapshotError, Trace, TraceError, canonical_json,
 };
 use serde_json::json;
 
@@ -165,6 +166,44 @@ fn budget_reservation_precedes_and_bounds_actual_usage() {
         budget.settle(reservation, 2),
         Err(BudgetError::ActualExceedsReservation)
     );
+}
+
+#[test]
+fn fixture_actual_usage_above_maximum_is_rejected_after_one_driver_call() {
+    let request = EffectRequest {
+        kind: EffectKind::Model,
+        identity: "Parse".to_owned(),
+        payload: json!({"model_alias": "planner"}),
+        request_hash: "request-001".to_owned(),
+    };
+    let mut driver = FixtureDriver::new(FixtureSet {
+        schema_version: 1,
+        entries: vec![FixtureEntry {
+            kind: EffectKind::Model,
+            identity: "Parse".to_owned(),
+            match_request: json!({"model_alias": "planner"}),
+            response: json!({"value": "answer"}),
+            max_usage: BTreeMap::from([("model_tokens".to_owned(), 5)]),
+            actual_usage: BTreeMap::from([("model_tokens".to_owned(), 6)]),
+        }],
+    })
+    .expect("fixture set is structurally valid");
+    let preview = driver.preview(&request).expect("fixture matches");
+    assert_eq!(
+        driver.resolve(&request, &preview),
+        Err(DriverError::ActualExceedsMaximum)
+    );
+    assert_eq!(driver.call_count(EffectKind::Model), 1);
+}
+
+#[test]
+fn opaque_secret_sentinel_cannot_escape_through_generic_serialization_or_debug() {
+    let sentinel = "UNIQUE-ASTER-SECRET-SENTINEL-7f31";
+    let secret = RuntimeValue::secret_for_test(sentinel);
+    let debug = format!("{secret:?}");
+    let error = serde_json::to_string(&secret).expect_err("secret serialization must fail");
+    assert!(!debug.contains(sentinel));
+    assert!(!error.to_string().contains(sentinel));
 }
 
 #[test]

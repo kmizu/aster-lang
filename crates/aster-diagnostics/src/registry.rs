@@ -58,6 +58,8 @@ pub enum KnownDiagnosticCode {
     ProposalUseAfterMove,
     /// Agent or flow omitted a required capability kind.
     MissingCapability,
+    /// Runtime grant file is invalid or lacks the exact scope.
+    InvalidCapabilityGrant,
     /// Prompt instruction was not a static block string.
     DynamicPromptInstruction,
     /// Secret entered model data.
@@ -68,6 +70,16 @@ pub enum KnownDiagnosticCode {
     UnknownBudgetDimension,
     /// Duplicate budget dimension.
     DuplicateBudgetDimension,
+    /// Runtime budget admission failed before an effect.
+    BudgetExhausted,
+    /// Typed runtime boundary or deterministic VM transition failed.
+    RuntimeFailure,
+    /// Replay semantics diverged from recorded evidence.
+    ReplayDivergence,
+    /// Trace schema, chain, or program identity is invalid.
+    TraceMismatch,
+    /// An implementation invariant failed safely.
+    InternalFailure,
 }
 
 impl KnownDiagnosticCode {
@@ -98,11 +110,17 @@ impl KnownDiagnosticCode {
             Self::PermitUseAfterMove => "ASTER-AFFINE-5001",
             Self::ProposalUseAfterMove => "ASTER-AFFINE-5002",
             Self::MissingCapability => "ASTER-CAP-6001",
+            Self::InvalidCapabilityGrant => "ASTER-CAP-6002",
             Self::DynamicPromptInstruction => "ASTER-PROMPT-7001",
             Self::SecretToModel => "ASTER-SECRET-8001",
             Self::SecretInState => "ASTER-SECRET-8002",
             Self::UnknownBudgetDimension => "ASTER-BUDGET-11001",
             Self::DuplicateBudgetDimension => "ASTER-BUDGET-11002",
+            Self::BudgetExhausted => "ASTER-BUDGET-11003",
+            Self::RuntimeFailure => "ASTER-RUNTIME-9001",
+            Self::ReplayDivergence => "ASTER-REPLAY-10001",
+            Self::TraceMismatch => "ASTER-REPLAY-10002",
+            Self::InternalFailure => "ASTER-INTERNAL-9901",
         }
     }
 }
@@ -229,6 +247,11 @@ fn governance_explanation(code: &str) -> Option<ExplanationText> {
             "the enclosing flow uses or agent requires list omits the capability kind",
             "declare the exact capability requirement before using the effect",
         ),
+        "ASTER-CAP-6002" => (
+            "a runtime capability grant is invalid or out of scope",
+            "the versioned grant set does not exactly match a typed capability request",
+            "issue the exact capability kind and canonical arguments required by the agent",
+        ),
         "ASTER-PROMPT-7001" => (
             "prompt instruction is not a static block string",
             "runtime expressions cannot be promoted to instructions",
@@ -253,6 +276,31 @@ fn governance_explanation(code: &str) -> Option<ExplanationText> {
             "a budget dimension was declared more than once",
             "duplicate limits would make reservation semantics ambiguous",
             "keep exactly one limit for the dimension",
+        ),
+        "ASTER-BUDGET-11003" => (
+            "an external effect exceeded its admitted budget",
+            "no capacity remained for the fixed or declared maximum usage",
+            "increase the declared per-event budget or reduce the requested usage",
+        ),
+        "ASTER-RUNTIME-9001" => (
+            "a typed runtime boundary or deterministic VM transition failed",
+            "external data, a fixture, authority, or machine state violated its schema",
+            "correct the boundary artifact and retry from a verified snapshot",
+        ),
+        "ASTER-REPLAY-10001" => (
+            "semantic replay diverged from recorded evidence",
+            "a request, governance decision, budget transition, or outcome changed",
+            "replay with the exact source, inputs, state, grants, and unmodified trace",
+        ),
+        "ASTER-REPLAY-10002" => (
+            "the trace schema, hash chain, or program identity is invalid",
+            "trace bytes were malformed, reordered, tampered with, or recorded for another program",
+            "restore the original complete JSON Lines trace and matching source",
+        ),
+        "ASTER-INTERNAL-9901" => (
+            "ASTER stopped at a protected implementation invariant",
+            "a compiler or runtime state could not be represented safely",
+            "preserve the inputs and report the deterministic failure context",
         ),
         _ => return None,
     })

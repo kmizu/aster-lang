@@ -185,6 +185,15 @@ pub struct RunOutcome {
     pub value: JsonValue,
 }
 
+/// Deterministically recomputed governance evidence from pure VM transitions.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AuditEvent {
+    /// Stable trace entry kind.
+    pub kind: String,
+    /// Secret-free canonicalizable evidence.
+    pub payload: JsonValue,
+}
+
 /// One pure machine transition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Step {
@@ -211,6 +220,7 @@ pub struct Machine {
     snapshot: MachineSnapshot,
     completed: Option<RunOutcome>,
     failed: Option<MachineError>,
+    audit_events: Vec<AuditEvent>,
 }
 
 impl Machine {
@@ -313,6 +323,7 @@ impl Machine {
             snapshot,
             completed: None,
             failed: None,
+            audit_events: Vec::new(),
         })
     }
 
@@ -322,6 +333,13 @@ impl Machine {
     ///
     /// Rejects a snapshot created for any other program.
     pub fn restore(program: Program, snapshot: MachineSnapshot) -> Result<Self, MachineError> {
+        if snapshot.schema_version != 1 {
+            return Err(MachineError::SnapshotSchemaMismatch);
+        }
+        snapshot.validate_no_secrets()?;
+        if snapshot.compute_hash()? != snapshot.snapshot_hash {
+            return Err(MachineError::SnapshotHashMismatch);
+        }
         if program.program_hash != snapshot.program_hash {
             return Err(MachineError::ProgramMismatch);
         }
@@ -330,7 +348,20 @@ impl Machine {
             snapshot,
             completed: None,
             failed: None,
+            audit_events: Vec::new(),
         })
+    }
+
+    /// Drains governance evidence produced since the preceding machine call.
+    #[must_use]
+    pub fn take_audit_events(&mut self) -> Vec<AuditEvent> {
+        std::mem::take(&mut self.audit_events)
+    }
+
+    /// Binds the next persisted continuation to the durable trace prefix.
+    pub fn set_trace_checkpoint(&mut self, position: u64, hash: String) {
+        self.snapshot.trace_position = position;
+        self.snapshot.trace_hash = hash;
     }
 
     /// Executes exactly one pure instruction or reports one suspension/terminal state.
@@ -417,6 +448,13 @@ impl Machine {
                         &self.snapshot.grant_fingerprint,
                         &expires_at,
                     );
+                    self.audit_events.push(AuditEvent {
+                        kind: "permit_issued".to_owned(),
+                        payload: json!({
+                            "proposal_hash": proposal.hash(),
+                            "policy": policy,
+                        }),
+                    });
                     RuntimeValue::Result(Ok(Box::new(RuntimeValue::Permit(permit))))
                 } else {
                     RuntimeValue::Result(Err("approval denied".to_owned()))
@@ -913,6 +951,21 @@ impl Machine {
                     &self.snapshot.grant_fingerprint,
                     &proposal.intent.expires_at,
                 );
+                self.audit_events.push(AuditEvent {
+                    kind: "policy_decision".to_owned(),
+                    payload: json!({
+                        "policy": policy,
+                        "proposal_hash": proposal.hash(),
+                        "decision": "allow",
+                    }),
+                });
+                self.audit_events.push(AuditEvent {
+                    kind: "permit_issued".to_owned(),
+                    payload: json!({
+                        "policy": policy,
+                        "proposal_hash": proposal.hash(),
+                    }),
+                });
                 self.frame_mut()?.slots.insert(
                     target,
                     RuntimeValue::Result(Ok(Box::new(RuntimeValue::Permit(permit)))),
@@ -921,6 +974,14 @@ impl Machine {
                 Ok(None)
             }
             PolicyRuntimeDecision::Approve(principal) if approval_may_suspend => {
+                self.audit_events.push(AuditEvent {
+                    kind: "policy_decision".to_owned(),
+                    payload: json!({
+                        "policy": policy,
+                        "proposal_hash": proposal.hash(),
+                        "decision": "approve",
+                    }),
+                });
                 let principal_json = runtime_to_json(&principal)?;
                 self.require_capability(&json!({
                     "capability": "HumanApproval",
@@ -952,6 +1013,14 @@ impl Machine {
             }
             PolicyRuntimeDecision::Approve(_) => Err(MachineError::ApprovalNotRepresentable),
             PolicyRuntimeDecision::Deny(reason) => {
+                self.audit_events.push(AuditEvent {
+                    kind: "policy_decision".to_owned(),
+                    payload: json!({
+                        "policy": policy,
+                        "proposal_hash": proposal.hash(),
+                        "decision": "deny",
+                    }),
+                });
                 self.frame_mut()?
                     .slots
                     .insert(target, RuntimeValue::Result(Err(reason)));
@@ -983,6 +1052,13 @@ impl Machine {
                 &self.snapshot.event_time,
             )
             .map_err(|error| MachineError::Authority(error.to_string()))?;
+        self.audit_events.push(AuditEvent {
+            kind: "proposal_committed".to_owned(),
+            payload: json!({
+                "action": proposal.action,
+                "proposal_hash": proposal.hash(),
+            }),
+        });
         let reservation = self
             .snapshot
             .budget
@@ -1034,6 +1110,14 @@ impl Machine {
             validator,
             vec![(*receipt.value).clone(), (*observation).clone()],
         )?;
+        self.audit_events.push(AuditEvent {
+            kind: "reconciliation_decision".to_owned(),
+            payload: json!({
+                "validator": validator,
+                "proposal_hash": receipt.proposal_hash,
+                "matched": valid,
+            }),
+        });
         let value = if valid {
             RuntimeValue::Result(Ok(Box::new(RuntimeValue::Reconciled(receipt))))
         } else {

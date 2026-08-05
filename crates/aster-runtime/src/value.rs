@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
 use crate::{Intent, Permit, Proposal};
@@ -75,8 +75,30 @@ impl RuntimeValue {
 }
 
 /// Opaque secret identity. Its inner material is intentionally private.
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct SecretHandle(String);
+
+impl Serialize for SecretHandle {
+    fn serialize<S>(&self, _: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Err(serde::ser::Error::custom(
+            "opaque secret handles cannot be serialized",
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for SecretHandle {
+    fn deserialize<D>(_: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(de::Error::custom(
+            "opaque secret handles cannot be deserialized",
+        ))
+    }
+}
 
 impl std::fmt::Debug for SecretHandle {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

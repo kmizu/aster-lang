@@ -245,3 +245,144 @@ fn machine_yields_resumes_and_round_trips_pending_snapshot() {
         }
     }
 }
+
+#[test]
+fn missing_exact_runtime_capability_is_rejected_at_admission() {
+    let program = inference_program();
+    let result = Machine::start(
+        program,
+        StartRequest {
+            agent: "A".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::new(),
+            payload: json!({"text": "hello"}),
+            state: BTreeMap::new(),
+            capabilities: grants(&[("ModelUse", json!("other-model"))]),
+        },
+    );
+    let Err(error) = result else {
+        panic!("out-of-scope grant must fail before any effect exists");
+    };
+    assert_eq!(error, MachineError::MissingCapability);
+}
+
+#[test]
+fn model_response_is_decoded_against_the_prompt_schema() {
+    let program = inference_program();
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "A".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::new(),
+            payload: json!({"text": "hello"}),
+            state: BTreeMap::new(),
+            capabilities: grants(&[("ModelUse", json!("planner"))]),
+        },
+    )
+    .expect("machine starts");
+    let request = loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(request) => break request,
+            other => panic!("expected model yield, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        machine.supply(&EffectResolution {
+            request_hash: request.request_hash,
+            payload: json!({"value": 42}),
+            actual_usage: BTreeMap::new(),
+        }),
+        Err(MachineError::TypeMismatch("Text".to_owned()))
+    );
+}
+
+#[test]
+fn tool_response_is_decoded_against_the_declared_result_schema() {
+    let program = checked_program("tests/conformance/pass/direct_allow.aster");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "Writer".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
+            payload: json!("save"),
+            state: BTreeMap::new(),
+            capabilities: grants(&[("Read", json!("user-001")), ("Write", json!("user-001"))]),
+        },
+    )
+    .expect("machine starts");
+    let request = loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Yield(request) => break request,
+            other => panic!("expected write yield, got {other:?}"),
+        }
+    };
+    assert_eq!(request.kind, EffectKind::Write);
+    assert_eq!(
+        machine.supply(&EffectResolution {
+            request_hash: request.request_hash,
+            payload: json!("not-an-item"),
+            actual_usage: BTreeMap::new(),
+        }),
+        Err(MachineError::TypeMismatch("Item".to_owned()))
+    );
+}
+
+#[test]
+fn failed_handler_keeps_state_update_unpublished() {
+    let source = SourceFile::new(
+        "atomic-state.aster",
+        r"module atomic.example;
+agent A() requires [] {
+  state { count: Int = 0; }
+  budget per_event {}
+  on message(msg: Incoming<Text>) -> Result<Unit, Error> {
+    update state { count = 1; }
+    require false;
+    return Ok(Unit);
+  }
+}
+",
+    );
+    let program = lower(&check_source(&source).expect("source checks")).expect("source lowers");
+    let mut machine = Machine::start(
+        program,
+        StartRequest {
+            agent: "A".to_owned(),
+            event: "message".to_owned(),
+            event_id: "evt-001".to_owned(),
+            event_time: "2026-08-05T12:00:00Z".to_owned(),
+            agent_arguments: BTreeMap::new(),
+            payload: json!("go"),
+            state: BTreeMap::from([("count".to_owned(), json!(0))]),
+            capabilities: grants(&[]),
+        },
+    )
+    .expect("machine starts");
+    loop {
+        match machine.step() {
+            Step::Continue => {}
+            Step::Failed(MachineError::RequirementFailed) => break,
+            other => panic!("expected controlled requirement failure, got {other:?}"),
+        }
+    }
+    let snapshot: JsonValue = serde_json::from_str(
+        &machine
+            .snapshot()
+            .expect("failed continuation remains inspectable")
+            .to_json()
+            .expect("snapshot serializes"),
+    )
+    .expect("snapshot is JSON");
+    assert_eq!(snapshot["current_state"]["count"]["value"], json!(0));
+    assert_eq!(snapshot["pending_state"]["count"]["value"], json!(1));
+}

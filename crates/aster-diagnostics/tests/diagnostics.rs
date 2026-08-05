@@ -94,6 +94,16 @@ fn diagnostic_registry_explains_known_codes_and_rejects_unknown_codes() {
     assert!(known.remediation.contains("validate candidate"));
 
     assert!(explain("ASTER-TYPE-2999").is_none());
+    for code in [
+        "ASTER-CAP-6002",
+        "ASTER-RUNTIME-9001",
+        "ASTER-REPLAY-10001",
+        "ASTER-REPLAY-10002",
+        "ASTER-BUDGET-11003",
+        "ASTER-INTERNAL-9901",
+    ] {
+        assert!(explain(code).is_some(), "{code} must be documented");
+    }
 }
 
 #[test]

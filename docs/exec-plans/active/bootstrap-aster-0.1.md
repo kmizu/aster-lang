@@ -96,6 +96,16 @@ sections 2, 23, 24, 25, 26, and 30 to have direct current-state evidence.
   and snapshot writes, and canonical hash-chained JSON Lines trace persistence.
   Added all four versioned meeting-scheduler input artifacts and demonstrated
   byte-identical record/replay output through the public CLI.
+- 2026-08-05: Hardened replay evidence: VM-originated policy, permit, commit,
+  and reconciliation audit events are recorded and independently recomputed;
+  trace prefixes are bound into snapshots; program/event/state/capability
+  fingerprints are explicit; maliciously rehashed results, program changes,
+  changed inputs, and reordered requests now have direct regression tests.
+- 2026-08-05: Added black-box CLI tests and runtime regressions for exact grant
+  failure, pre-driver model/write budget rejection, model/tool schema mismatch,
+  atomic failed-handler state, generic secret serialization rejection, and
+  fixture actual-usage overflow. Registered runtime/replay/capability/budget/
+  internal diagnostic families and remediation text.
 
 ## Discoveries and deviations
 

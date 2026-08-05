@@ -20,8 +20,8 @@ pub use fixture::{
     DriverError, EffectDriver, FixtureDriver, FixtureEntry, FixturePreview, FixtureSet,
 };
 pub use machine::{
-    EffectKind, EffectRequest, EffectResolution, Machine, MachineError, MachineSnapshot,
-    RunOutcome, StartRequest, Step,
+    AuditEvent, EffectKind, EffectRequest, EffectResolution, Machine, MachineError,
+    MachineSnapshot, RunOutcome, StartRequest, Step,
 };
 pub use run::{RecordResult, ReplayError, RunError, record_run, replay_run};
 pub use trace::{Trace, TraceEntry, TraceError};

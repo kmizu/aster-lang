@@ -67,6 +67,20 @@ impl Trace {
         Ok(())
     }
 
+    /// Returns the next sequence and current chain head for snapshot binding.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a trace whose length cannot be represented by the schema.
+    pub fn checkpoint(&self) -> Result<(u64, String), TraceError> {
+        Ok((
+            u64::try_from(self.entries.len()).map_err(|_| TraceError::TooLong)?,
+            self.entries
+                .last()
+                .map_or_else(String::new, |entry| entry.entry_hash.clone()),
+        ))
+    }
+
     /// Verifies schema, sequence, run identity, linkage, and every entry hash.
     ///
     /// # Errors

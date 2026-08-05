@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
-    DriverError, EffectDriver, EffectKind, EffectRequest, EffectResolution, Machine, MachineError,
+    AuditEvent, DriverError, EffectDriver, EffectRequest, EffectResolution, Machine, MachineError,
     MachineSnapshot, RunOutcome, StartRequest, Step, Trace, TraceError, canonical_sha256,
 };
 use aster_ir::Program;
@@ -50,16 +50,38 @@ pub fn record_run<D: EffectDriver>(
         "event_received",
         json!({"event_id": start.event_id, "event_time": start.event_time}),
     )?;
+    trace.append(
+        "fingerprints",
+        json!({
+            "program": program.program_hash,
+            "event": canonical_sha256(&json!({
+                "agent": start.agent,
+                "event": start.event,
+                "event_id": start.event_id,
+                "event_time": start.event_time,
+                "agent_arguments": start.agent_arguments,
+                "payload": start.payload,
+            })).map_err(|error| RunError::Data(error.to_string()))?,
+            "state": canonical_sha256(&start.state)
+                .map_err(|error| RunError::Data(error.to_string()))?,
+            "capabilities": canonical_sha256(&start.capabilities)
+                .map_err(|error| RunError::Data(error.to_string()))?,
+        }),
+    )?;
     let mut machine = Machine::start(program, start)?;
     let mut snapshots = Vec::new();
     loop {
-        match machine.step() {
+        let step = machine.step();
+        append_audit_events(&mut trace, machine.take_audit_events())?;
+        match step {
             Step::Continue => {}
             Step::Yield(request) => {
                 trace.append("effect_requested", to_value(&request)?)?;
                 let preview = driver.preview(&request)?;
                 machine.reserve_pending_usage(&preview.max_usage)?;
                 trace.append("budget_reserved", to_value(&preview.max_usage)?)?;
+                let (position, hash) = trace.checkpoint()?;
+                machine.set_trace_checkpoint(position, hash);
                 let snapshot = machine.snapshot()?;
                 trace.append(
                     "snapshot_written",
@@ -69,8 +91,8 @@ pub fn record_run<D: EffectDriver>(
                 let resolution = driver.resolve(&request, &preview)?;
                 trace.append("effect_resolved", to_value(&resolution)?)?;
                 machine.supply(&resolution)?;
+                append_audit_events(&mut trace, machine.take_audit_events())?;
                 trace.append("budget_settled", to_value(&resolution.actual_usage)?)?;
-                append_effect_evidence(&mut trace, &request, &resolution)?;
             }
             Step::Completed(outcome) => {
                 trace.append("state_committed", to_value(&outcome.state)?)?;
@@ -112,8 +134,11 @@ pub fn replay_run(
     }
     let mut machine = Machine::start(program, start)?;
     let mut effect_index = 0_usize;
+    let mut generated_audit = Vec::new();
     loop {
-        match machine.step() {
+        let step = machine.step();
+        generated_audit.extend(machine.take_audit_events());
+        match step {
             Step::Continue => {}
             Step::Yield(request) => {
                 let expected: EffectRequest = from_value(
@@ -136,6 +161,7 @@ pub fn replay_run(
                         .ok_or(ReplayError::EffectSequenceMismatch)?,
                 )?;
                 machine.supply(&resolution)?;
+                generated_audit.extend(machine.take_audit_events());
                 effect_index = effect_index
                     .checked_add(1)
                     .ok_or(ReplayError::EffectSequenceMismatch)?;
@@ -151,6 +177,18 @@ pub fn replay_run(
                 )?;
                 if outcome != recorded {
                     return Err(ReplayError::OutcomeDivergence);
+                }
+                let recorded_audit = trace
+                    .entries
+                    .iter()
+                    .filter(|entry| is_audit_kind(&entry.kind))
+                    .map(|entry| AuditEvent {
+                        kind: entry.kind.clone(),
+                        payload: entry.payload.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                if generated_audit != recorded_audit {
+                    return Err(ReplayError::GovernanceDivergence);
                 }
                 return Ok(outcome);
             }
@@ -185,27 +223,18 @@ fn payloads<'a>(trace: &'a Trace, kind: &'a str) -> impl Iterator<Item = &'a Val
         .map(|entry| &entry.payload)
 }
 
-fn append_effect_evidence(
-    trace: &mut Trace,
-    request: &EffectRequest,
-    resolution: &EffectResolution,
-) -> Result<(), RunError> {
-    match request.kind {
-        EffectKind::Approval => trace.append(
-            "permit_issued",
-            json!({"request_hash": request.request_hash, "approved": resolution.payload.get("approved")}),
-        )?,
-        EffectKind::Write => trace.append(
-            "proposal_committed",
-            json!({"request_hash": request.request_hash}),
-        )?,
-        EffectKind::Read if request.identity.contains("lookup") => trace.append(
-            "reconciliation_observation",
-            json!({"request_hash": request.request_hash}),
-        )?,
-        EffectKind::Model | EffectKind::Read => {}
+fn append_audit_events(trace: &mut Trace, events: Vec<AuditEvent>) -> Result<(), RunError> {
+    for event in events {
+        trace.append(event.kind, event.payload)?;
     }
     Ok(())
+}
+
+fn is_audit_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "policy_decision" | "permit_issued" | "proposal_committed" | "reconciliation_decision"
+    )
 }
 
 fn to_value<T: Serialize>(value: &T) -> Result<Value, RunError> {
@@ -248,6 +277,8 @@ pub enum ReplayError {
     RequestDivergence,
     #[error("replayed outcome diverged")]
     OutcomeDivergence,
+    #[error("replayed governance evidence diverged")]
+    GovernanceDivergence,
     #[error("replay data failure: {0}")]
     Data(String),
 }

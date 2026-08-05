@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use aster_ir::lower;
 use aster_runtime::{
     CapabilityGrant, CapabilityGrants, EffectKind, FixtureDriver, FixtureEntry, FixtureSet,
-    ReplayError, StartRequest, canonical_json, record_run, replay_run,
+    ReplayError, RunError, StartRequest, Trace, canonical_json, canonical_sha256, record_run,
+    replay_run,
 };
 use aster_semantics::check_source;
 use aster_syntax::SourceFile;
@@ -108,6 +109,17 @@ fn fixture_driver() -> FixtureDriver {
     .expect("fixtures are valid")
 }
 
+fn reseal(trace: &mut Trace) {
+    let mut previous = String::new();
+    for (index, entry) in trace.entries.iter_mut().enumerate() {
+        entry.sequence = u64::try_from(index).expect("test trace is short");
+        entry.previous_entry_hash.clone_from(&previous);
+        entry.entry_hash.clear();
+        entry.entry_hash = canonical_sha256(entry).expect("entry hashes");
+        previous.clone_from(&entry.entry_hash);
+    }
+}
+
 #[test]
 fn meeting_record_and_driver_free_replay_have_identical_state() {
     // Catches replay implementations that merely trust recorded final output.
@@ -130,6 +142,132 @@ fn meeting_record_and_driver_free_replay_have_identical_state() {
         canonical_json(&json!(replayed.state)).unwrap()
     );
     assert_eq!(replayed.state["last_event"], json!({"id": "event-001"}));
+}
+
+#[test]
+fn maliciously_rehashed_result_still_fails_semantic_replay() {
+    let program = meeting_program();
+    let start = start_request();
+    let mut driver = fixture_driver();
+    let mut trace = record_run(program.clone(), start.clone(), &mut driver)
+        .expect("record succeeds")
+        .trace;
+    let model_result = trace
+        .entries
+        .iter_mut()
+        .find(|entry| {
+            entry.kind == "effect_resolved"
+                && entry.payload["payload"]["title"] == json!("Planning")
+        })
+        .expect("model resolution exists");
+    model_result.payload["payload"]["title"] = json!("Malicious title");
+    reseal(&mut trace);
+    trace.verify().expect("attacker recomputed a valid chain");
+    assert!(matches!(
+        replay_run(program, start, &trace),
+        Err(ReplayError::RequestDivergence | ReplayError::OutcomeDivergence)
+    ));
+}
+
+#[test]
+fn replay_rejects_modified_program_and_reordered_effect_requests() {
+    let program = meeting_program();
+    let start = start_request();
+    let mut driver = fixture_driver();
+    let recorded =
+        record_run(program.clone(), start.clone(), &mut driver).expect("record succeeds");
+    let mut changed_program = program.clone();
+    changed_program.program_hash = "changed-program".to_owned();
+    assert!(matches!(
+        replay_run(changed_program, start.clone(), &recorded.trace),
+        Err(ReplayError::FingerprintMismatch)
+    ));
+
+    let mut reordered = recorded.trace;
+    let request_indices: Vec<_> = reordered
+        .entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| (entry.kind == "effect_requested").then_some(index))
+        .collect();
+    let first = request_indices[0];
+    let second = request_indices[1];
+    let first_payload = reordered.entries[first].payload.clone();
+    reordered.entries[first].payload = reordered.entries[second].payload.clone();
+    reordered.entries[second].payload = first_payload;
+    reseal(&mut reordered);
+    assert!(matches!(
+        replay_run(program, start, &reordered),
+        Err(ReplayError::RequestDivergence)
+    ));
+}
+
+#[test]
+fn exhausted_model_budget_rejects_before_driver_invocation() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("examples/meeting-scheduler/main.aster");
+    let text = std::fs::read_to_string(&path)
+        .expect("example is readable")
+        .replacen("model_calls <= 2", "model_calls <= 0", 1);
+    let program =
+        lower(&check_source(&SourceFile::new("zero-budget.aster", text)).expect("source checks"))
+            .expect("source lowers");
+    let mut driver = fixture_driver();
+    assert!(matches!(
+        record_run(program, start_request(), &mut driver),
+        Err(RunError::Machine(_))
+    ));
+    assert_eq!(driver.call_count(EffectKind::Model), 0);
+}
+
+#[test]
+fn exhausted_write_budget_rejects_before_driver_invocation() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let path = root.join("tests/conformance/pass/direct_allow.aster");
+    let text = std::fs::read_to_string(&path)
+        .expect("fixture is readable")
+        .replacen("external_writes <= 1", "external_writes <= 0", 1);
+    let program = lower(
+        &check_source(&SourceFile::new("zero-write-budget.aster", text)).expect("source checks"),
+    )
+    .expect("source lowers");
+    let start = StartRequest {
+        agent: "Writer".to_owned(),
+        event: "message".to_owned(),
+        event_id: "evt-001".to_owned(),
+        event_time: "2026-08-05T12:00:00Z".to_owned(),
+        agent_arguments: BTreeMap::from([("owner".to_owned(), json!("user-001"))]),
+        payload: json!("save"),
+        state: BTreeMap::new(),
+        capabilities: CapabilityGrants {
+            schema_version: 1,
+            grants: vec![
+                CapabilityGrant {
+                    capability: "Read".to_owned(),
+                    arguments: vec![json!("user-001")],
+                },
+                CapabilityGrant {
+                    capability: "Write".to_owned(),
+                    arguments: vec![json!("user-001")],
+                },
+            ],
+        },
+    };
+    let mut driver = FixtureDriver::new(FixtureSet {
+        schema_version: 1,
+        entries: vec![entry(
+            EffectKind::Write,
+            "Store.put",
+            json!({"arguments": {"request_id": "evt-001"}}),
+            json!({"id": "created-001"}),
+        )],
+    })
+    .expect("fixture is valid");
+    assert!(matches!(
+        record_run(program, start, &mut driver),
+        Err(RunError::Machine(_))
+    ));
+    assert_eq!(driver.call_count(EffectKind::Write), 0);
 }
 
 #[test]
