@@ -64,6 +64,25 @@ for relative in ("AGENTS.md", "README.md", "ARCHITECTURE.md"):
         if not resolved.exists():
             errors.append(f"broken link in {relative}: {target}")
 
+readme = root / "README.md"
+if readme.is_file():
+    readme_text = readme.read_text(encoding="utf-8")
+    for term in (
+        "## Why ASTER",
+        "## Five-minute deterministic proof",
+        "Fixture-backed record",
+        "Driver-free replay",
+        "## What the proof establishes",
+        "## Authority model",
+        "## External host integration",
+        "effect_preview -> effect_admission -> execute_grant -> effect_resolution",
+        "## Install a release archive",
+        "## Project scope",
+        "## Documentation map",
+    ):
+        if term not in readme_text:
+            errors.append(f"README missing required onboarding term: {term}")
+
 registry = root / "crates/aster-diagnostics/src/registry.rs"
 reference = root / "docs/design-docs/diagnostics.md"
 if registry.is_file() and reference.is_file():
