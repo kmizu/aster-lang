@@ -739,6 +739,11 @@ impl HostSession {
         self.outstanding = HostOutstanding::Terminal(frame);
     }
 
+    /// Closes an active session after a transport-level protocol failure.
+    pub fn fail_protocol(&mut self, error: &HostProtocolError) {
+        self.transition_failed(error);
+    }
+
     /// Signals transport EOF. EOF is valid only after a terminal frame.
     ///
     /// # Errors

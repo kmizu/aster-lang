@@ -30,7 +30,7 @@ The step-by-step implementation plan is
 - [x] Extract a pure, resumable runtime `RecordSession`.
 - [x] Define canonical host frames and grant binding.
 - [x] Implement the transport-independent `HostSession` state machine.
-- [ ] Add bounded JSONL CLI transport, persistence, and crash resume.
+- [x] Add bounded JSONL CLI transport, persistence, and crash resume.
 - [ ] Register stable diagnostics and prove payload redaction.
 - [ ] Add the governed-note self-use example and end-to-end host proof.
 - [ ] Make the protocol and its trust boundary normative in documentation.
@@ -61,6 +61,12 @@ The step-by-step implementation plan is
   through `replay_run` with no host interaction. The Task 3 gate passed 55
   integration tests (9 governance, 15 host, 19 machine, 12 record/replay) and
   strict runtime clippy.
+- 2026-08-06: Added `aster host` and `aster host-resume`, a bounded JSONL
+  transport, shared start-input loading, and atomic host evidence persistence.
+  Black-box tests prove protocol-only stdout, malformed/unknown/version/UTF-8/
+  EOF terminal failures, and crash-after-grant resume with identical request,
+  maximums, snapshot hash, and grant hash. Unit tests prove exactly 1 MiB is
+  accepted and one extra byte is rejected before unbounded allocation.
 
 ## Surprises & Discoveries
 
@@ -80,6 +86,10 @@ The step-by-step implementation plan is
   terminal evidence. `HostSession` therefore closes the active
   `RecordSession` into a `RecordFailure`, exposes the redacted `failed` frame,
   and retains the resulting trace/snapshots after returning the typed error.
+- The CLI must persist every session snapshot and the hash-chained trace before
+  writing `execute_grant`. A process killed immediately after the host reads
+  the grant can therefore restore the exact admitted continuation without a
+  second admission.
 
 ## Decision Log
 
@@ -106,6 +116,9 @@ The step-by-step implementation plan is
 - A resumed `HostSession` always performs a fresh hello exchange, then emits
   the identical grant reconstructed from the sealed snapshot. It never emits
   a preview or accepts a second admission for that pending effect.
+- Standard output ownership is enforced structurally: host commands write only
+  through `HostTransport`; all `CliError` reporting remains on standard error.
+  Each successful write is one JSON object, one newline, and a flush.
 
 ## Outcomes & Retrospective
 

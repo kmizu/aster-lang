@@ -4,15 +4,16 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use aster_diagnostics::{Diagnostic, DiagnosticCode, explain};
 use aster_ir::{Program, lower};
 use aster_runtime::{
-    CapabilityGrants, EffectResolution, FixtureDriver, FixtureSet, Machine, MachineSnapshot,
-    StartRequest, Step, Trace, budget_settlement_evidence, record_run_evidenced, replay_run,
+    CapabilityGrants, EffectResolution, FixtureDriver, FixtureSet, HostOutboundMessage,
+    HostProtocolError, HostSession, Machine, MachineSnapshot, StartRequest, Step, Trace,
+    budget_settlement_evidence, record_run_evidenced, replay_run,
 };
 use aster_semantics::check_source;
 use aster_syntax::{SourceFile, format_source, parse};
@@ -20,6 +21,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+
+mod host_io;
+
+use host_io::HostTransport;
 
 /// ASTER 0.1 compiler and deterministic fixture runtime.
 #[derive(Debug, Parser)]
@@ -70,6 +75,38 @@ enum Command {
         output_state: PathBuf,
         #[arg(long, value_enum, default_value_t)]
         diagnostic_format: DiagnosticFormat,
+    },
+    Host {
+        source: PathBuf,
+        #[arg(long)]
+        agent: String,
+        #[arg(long)]
+        event: String,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        state: PathBuf,
+        #[arg(long)]
+        capabilities: PathBuf,
+        #[arg(long)]
+        trace: PathBuf,
+        #[arg(long)]
+        snapshot_dir: PathBuf,
+        #[arg(long)]
+        output_state: PathBuf,
+        #[arg(long, value_enum, default_value_t)]
+        diagnostic_format: DiagnosticFormat,
+    },
+    HostResume {
+        source: PathBuf,
+        #[arg(long)]
+        snapshot: PathBuf,
+        #[arg(long)]
+        trace: PathBuf,
+        #[arg(long)]
+        snapshot_dir: PathBuf,
+        #[arg(long)]
+        output_state: PathBuf,
     },
     Replay {
         source: PathBuf,
@@ -197,6 +234,9 @@ fn execute(cli: Cli) -> Result<(), CliError> {
             output_state,
             diagnostic_format,
         }),
+        command @ (Command::Host { .. } | Command::HostResume { .. }) => {
+            execute_host_subcommand(command)
+        }
         Command::Replay {
             source,
             trace,
@@ -233,6 +273,42 @@ fn execute(cli: Cli) -> Result<(), CliError> {
     }
 }
 
+fn execute_host_subcommand(command: Command) -> Result<(), CliError> {
+    match command {
+        Command::Host {
+            source,
+            agent,
+            event,
+            input,
+            state,
+            capabilities,
+            trace,
+            snapshot_dir,
+            output_state,
+            diagnostic_format,
+        } => host_command(HostFiles {
+            source,
+            agent,
+            event,
+            input,
+            state,
+            capabilities,
+            trace,
+            snapshot_dir,
+            output_state,
+            diagnostic_format,
+        }),
+        Command::HostResume {
+            source,
+            snapshot,
+            trace,
+            snapshot_dir,
+            output_state,
+        } => host_resume_command(&source, &snapshot, &trace, &snapshot_dir, &output_state),
+        _ => Err(CliError::internal("expected a host subcommand")),
+    }
+}
+
 struct RunFiles {
     source: PathBuf,
     agent: String,
@@ -249,13 +325,14 @@ struct RunFiles {
 
 fn run_command(files: RunFiles) -> Result<(), CliError> {
     let program = compile(&files.source, files.diagnostic_format)?;
-    let input: EventInput = read_json(&files.input)?;
-    let state: InitialState = read_json(&files.state)?;
-    let capabilities: CapabilityGrants = read_json(&files.capabilities)?;
+    let start = read_start(
+        files.agent,
+        files.event,
+        &files.input,
+        &files.state,
+        &files.capabilities,
+    )?;
     let fixtures: FixtureSet = read_json(&files.fixtures)?;
-    validate_schema(input.schema_version, "event input")?;
-    validate_schema(state.schema_version, "initial state")?;
-    let start = start_request(files.agent, files.event, input, state, capabilities);
     let mut driver = FixtureDriver::new(fixtures).map_err(CliError::runtime)?;
     let recorded = match record_run_evidenced(program, start, &mut driver) {
         Ok(value) => value,
@@ -271,6 +348,124 @@ fn run_command(files: RunFiles) -> Result<(), CliError> {
     atomic_write(&files.trace, recorded.trace.to_json_lines()?.as_bytes())?;
     write_state(&files.output_state, &recorded.outcome.state)?;
     Ok(())
+}
+
+struct HostFiles {
+    source: PathBuf,
+    agent: String,
+    event: String,
+    input: PathBuf,
+    state: PathBuf,
+    capabilities: PathBuf,
+    trace: PathBuf,
+    snapshot_dir: PathBuf,
+    output_state: PathBuf,
+    diagnostic_format: DiagnosticFormat,
+}
+
+fn host_command(files: HostFiles) -> Result<(), CliError> {
+    let program = compile(&files.source, files.diagnostic_format)?;
+    let start = read_start(
+        files.agent,
+        files.event,
+        &files.input,
+        &files.state,
+        &files.capabilities,
+    )?;
+    let session = HostSession::start(program, start).map_err(|error| CliError::host(&error))?;
+    drive_host(
+        session,
+        &files.trace,
+        &files.snapshot_dir,
+        &files.output_state,
+    )
+}
+
+fn host_resume_command(
+    source: &Path,
+    snapshot_path: &Path,
+    trace_path: &Path,
+    snapshot_dir: &Path,
+    output_state: &Path,
+) -> Result<(), CliError> {
+    let program = compile(source, DiagnosticFormat::Human)?;
+    let snapshot = MachineSnapshot::from_json(&read_utf8(snapshot_path)?)?;
+    let trace = Trace::from_json_lines(&read_utf8(trace_path)?).map_err(CliError::replay)?;
+    let session =
+        HostSession::restore(program, snapshot, trace).map_err(|error| CliError::host(&error))?;
+    drive_host(session, trace_path, snapshot_dir, output_state)
+}
+
+fn drive_host(
+    mut session: HostSession,
+    trace_path: &Path,
+    snapshot_dir: &Path,
+    output_state: &Path,
+) -> Result<(), CliError> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    let mut transport = HostTransport::new(stdin.lock(), stdout.lock());
+    let initial = session
+        .outbound()
+        .ok_or_else(|| CliError::internal("host session has no initial frame"))?;
+    transport
+        .write_frame(&initial)
+        .map_err(|error| CliError::host(&error.protocol_error()))?;
+    loop {
+        let inbound = match transport.read_frame() {
+            Ok(frame) => frame,
+            Err(error) => {
+                let protocol = error.protocol_error();
+                session.fail_protocol(&protocol);
+                persist_host_evidence(&session, trace_path, snapshot_dir)?;
+                if let Some(failed) = session.outbound() {
+                    let _ = transport.write_frame(&failed);
+                }
+                return Err(CliError::host(&protocol));
+            }
+        };
+        let outbound = match session.reply(inbound) {
+            Ok(frame) => frame,
+            Err(error) => {
+                persist_host_evidence(&session, trace_path, snapshot_dir)?;
+                if let Some(failed) = session.outbound() {
+                    let _ = transport.write_frame(&failed);
+                }
+                return Err(CliError::host(&error));
+            }
+        };
+        match &outbound.message {
+            HostOutboundMessage::ExecuteGrant(_) | HostOutboundMessage::Failed(_) => {
+                persist_host_evidence(&session, trace_path, snapshot_dir)?;
+            }
+            HostOutboundMessage::Completed(_) => {
+                persist_host_evidence(&session, trace_path, snapshot_dir)?;
+                let outcome = session
+                    .outcome()
+                    .ok_or_else(|| CliError::internal("completed host session lacks outcome"))?;
+                write_state(output_state, &outcome.state)?;
+            }
+            HostOutboundMessage::Hello(_) | HostOutboundMessage::EffectPreview(_) => {}
+        }
+        if let Err(error) = transport.write_frame(&outbound) {
+            let protocol = error.protocol_error();
+            session.fail_protocol(&protocol);
+            persist_host_evidence(&session, trace_path, snapshot_dir)?;
+            return Err(CliError::host(&protocol));
+        }
+        if matches!(outbound.message, HostOutboundMessage::Completed(_)) {
+            return Ok(());
+        }
+    }
+}
+
+fn persist_host_evidence(
+    session: &HostSession,
+    trace_path: &Path,
+    snapshot_dir: &Path,
+) -> Result<(), CliError> {
+    write_snapshots(snapshot_dir, session.snapshots())?;
+    atomic_write(trace_path, session.trace().to_json_lines()?.as_bytes())
 }
 
 fn write_snapshots(directory: &Path, snapshots: &[MachineSnapshot]) -> Result<(), CliError> {
@@ -409,6 +604,21 @@ fn start_request(
     }
 }
 
+fn read_start(
+    agent: String,
+    event: String,
+    input_path: &Path,
+    state_path: &Path,
+    capabilities_path: &Path,
+) -> Result<StartRequest, CliError> {
+    let input: EventInput = read_json(input_path)?;
+    let state: InitialState = read_json(state_path)?;
+    let capabilities: CapabilityGrants = read_json(capabilities_path)?;
+    validate_schema(input.schema_version, "event input")?;
+    validate_schema(state.schema_version, "initial state")?;
+    Ok(start_request(agent, event, input, state, capabilities))
+}
+
 fn format_command(path: &Path, check: bool, write: bool) -> Result<(), CliError> {
     let original = read_utf8(path)?;
     let source = SourceFile::new(path.display().to_string(), original.clone());
@@ -538,6 +748,8 @@ enum CliError {
     Replay(String),
     #[error("ASTER-INTERNAL-9901: internal failure: {0}")]
     Internal(String),
+    #[error("{code}: {summary}")]
+    Host { code: &'static str, summary: String },
     #[error("I/O failure: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON failure: {0}")]
@@ -557,10 +769,17 @@ impl CliError {
         Self::Internal(error.to_string())
     }
 
+    fn host(error: &HostProtocolError) -> Self {
+        Self::Host {
+            code: error.diagnostic_code(),
+            summary: error.to_string(),
+        }
+    }
+
     const fn exit_code(&self) -> u8 {
         match self {
             Self::Source(_) | Self::SourceJson(_) => 1,
-            Self::Runtime(_) | Self::Io(_) | Self::Json(_) => 2,
+            Self::Runtime(_) | Self::Host { .. } | Self::Io(_) | Self::Json(_) => 2,
             Self::Replay(_) => 3,
             Self::Internal(_) => 4,
         }
