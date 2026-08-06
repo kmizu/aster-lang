@@ -184,6 +184,8 @@ cmp "$ASTER_DEMO_DIR/record-state.json" \
   owner = user,
   duration_minutes = request.value.duration_minutes,
 ))?;
+<span class="code-keyword">require</span> (len(slots.value) &gt; 0);
+<span class="code-keyword">let</span> selected = (first(slots.value))?;
 
 <span class="code-keyword">let</span> purpose = <span class="code-effect">intent</span> ScheduleMeeting {
   actor = self;
