@@ -9,7 +9,6 @@ on:
       tag:
         description: Existing release tag to build and publish
         required: true
-        default: v0.1.0
         type: string
 
 env:
@@ -59,26 +58,18 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             binary: aster
-            bundle: aster-v0.1.0-x86_64-unknown-linux-musl
-            asset: aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz
             format: tar.gz
           - runner: macos-15
             target: aarch64-apple-darwin
             binary: aster
-            bundle: aster-v0.1.0-aarch64-apple-darwin
-            asset: aster-v0.1.0-aarch64-apple-darwin.tar.gz
             format: tar.gz
           - runner: macos-15-intel
             target: x86_64-apple-darwin
             binary: aster
-            bundle: aster-v0.1.0-x86_64-apple-darwin
-            asset: aster-v0.1.0-x86_64-apple-darwin.tar.gz
             format: tar.gz
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
             binary: aster.exe
-            bundle: aster-v0.1.0-x86_64-pc-windows-msvc
-            asset: aster-v0.1.0-x86_64-pc-windows-msvc.zip
             format: zip
     runs-on: ${{ matrix.runner }}
     steps:
@@ -111,32 +102,53 @@ jobs:
         run: |
           target/${{ matrix.target }}/release/aster --version
           target/${{ matrix.target }}/release/aster check examples/meeting-scheduler/main.aster
+          target/${{ matrix.target }}/release/aster check examples/governed-note/main.aster
       - name: Smoke-test Windows release binary
         if: runner.os == 'Windows'
         shell: bash
         run: |
           target/${{ matrix.target }}/release/aster.exe --version
           target/${{ matrix.target }}/release/aster.exe check examples/meeting-scheduler/main.aster
+          target/${{ matrix.target }}/release/aster.exe check examples/governed-note/main.aster
       - name: Stage release archive
+        id: release-metadata
         shell: bash
         run: |
-          staging="dist/${{ matrix.bundle }}"
+          version=$(awk '
+            /^\[workspace\.package\][[:space:]]*$/ { in_workspace_package = 1; next }
+            /^\[/ { in_workspace_package = 0 }
+            in_workspace_package && /^[[:space:]]*version[[:space:]]*=/ {
+              value = $0
+              sub(/^[^=]*=[[:space:]]*"/, "", value)
+              sub(/"[[:space:]]*$/, "", value)
+              print value
+              exit
+            }
+          ' Cargo.toml)
+          bundle="aster-v${version}-${{ matrix.target }}"
+          case "${{ matrix.format }}" in
+            tar.gz) asset="${bundle}.tar.gz" ;;
+            zip) asset="${bundle}.zip" ;;
+          esac
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          staging="dist/$bundle"
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$staging/"
           cp README.md LICENSE "$staging/"
       - name: Create tar archive
         if: matrix.format == 'tar.gz'
         shell: bash
-        run: tar -C "dist/${{ matrix.bundle }}" -czf "dist/${{ matrix.asset }}" .
+        run: tar -C "dist/${{ steps.release-metadata.outputs.bundle }}" -czf "dist/${{ steps.release-metadata.outputs.asset }}" .
       - name: Create zip archive
         if: matrix.format == 'zip'
         shell: pwsh
-        run: Compress-Archive -Path "dist/${{ matrix.bundle }}/*" -DestinationPath "dist/${{ matrix.asset }}"
+        run: Compress-Archive -Path "dist/${{ steps.release-metadata.outputs.bundle }}/*" -DestinationPath "dist/${{ steps.release-metadata.outputs.asset }}"
       - name: Upload release archive
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
-          path: dist/${{ matrix.asset }}
+          path: dist/${{ steps.release-metadata.outputs.asset }}
           if-no-files-found: error
           retention-days: 7
 
@@ -158,11 +170,22 @@ jobs:
       - name: Verify exact archive set and create checksums
         shell: bash
         run: |
+          version=$(awk '
+            /^\[workspace\.package\][[:space:]]*$/ { in_workspace_package = 1; next }
+            /^\[/ { in_workspace_package = 0 }
+            in_workspace_package && /^[[:space:]]*version[[:space:]]*=/ {
+              value = $0
+              sub(/^[^=]*=[[:space:]]*"/, "", value)
+              sub(/"[[:space:]]*$/, "", value)
+              print value
+              exit
+            }
+          ' Cargo.toml)
           expected=(
-            aster-v0.1.0-aarch64-apple-darwin.tar.gz
-            aster-v0.1.0-x86_64-apple-darwin.tar.gz
-            aster-v0.1.0-x86_64-pc-windows-msvc.zip
-            aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+            "aster-v${version}-aarch64-apple-darwin.tar.gz"
+            "aster-v${version}-x86_64-apple-darwin.tar.gz"
+            "aster-v${version}-x86_64-pc-windows-msvc.zip"
+            "aster-v${version}-x86_64-unknown-linux-musl.tar.gz"
           )
           mapfile -t actual < <(find dist -maxdepth 1 -type f -printf '%f\n' | sort)
           if [[ "${actual[*]}" != "${expected[*]}" ]]; then
@@ -185,7 +208,19 @@ jobs:
               exit 1
             fi
           done
-          mapfile -t zip_members < <(unzip -Z1 dist/aster-v0.1.0-x86_64-pc-windows-msvc.zip | sed '/\/$/d' | sort)
+          version=$(awk '
+            /^\[workspace\.package\][[:space:]]*$/ { in_workspace_package = 1; next }
+            /^\[/ { in_workspace_package = 0 }
+            in_workspace_package && /^[[:space:]]*version[[:space:]]*=/ {
+              value = $0
+              sub(/^[^=]*=[[:space:]]*"/, "", value)
+              sub(/"[[:space:]]*$/, "", value)
+              print value
+              exit
+            }
+          ' Cargo.toml)
+          windows="dist/aster-v${version}-x86_64-pc-windows-msvc.zip"
+          mapfile -t zip_members < <(unzip -Z1 "$windows" | sed '/\/$/d' | sort)
           expected_zip=(LICENSE README.md aster.exe)
           if [[ "${zip_members[*]}" != "${expected_zip[*]}" ]]; then
             echo "unexpected members in Windows archive: ${zip_members[*]}" >&2
@@ -196,8 +231,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          version=$(awk '
+            /^\[workspace\.package\][[:space:]]*$/ { in_workspace_package = 1; next }
+            /^\[/ { in_workspace_package = 0 }
+            in_workspace_package && /^[[:space:]]*version[[:space:]]*=/ {
+              value = $0
+              sub(/^[^=]*=[[:space:]]*"/, "", value)
+              sub(/"[[:space:]]*$/, "", value)
+              print value
+              exit
+            }
+          ' Cargo.toml)
+          notes="docs/releases/v${version}.md"
           gh release create "$RELEASE_TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "ASTER $RELEASE_TAG" \
-            --notes-file docs/releases/v0.1.0.md \
+            --notes-file "$notes" \
             --verify-tag

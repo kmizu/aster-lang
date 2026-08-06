@@ -16,7 +16,7 @@ cat >"$valid_site/index.html" <<'EOF'
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ASTER v0.1.0</title>
+  <title>ASTER v0.2.0</title>
   <link rel="stylesheet" href="styles.css">
   <script src="site.js" defer></script>
 </head>
@@ -28,10 +28,10 @@ cat >"$valid_site/index.html" <<'EOF'
     <section id="boundary">Candidate Proposal Permit Reconciliation</section>
     <section id="evidence">driver calls 0</section>
     <section id="download">
-      <a href="aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz">Linux</a>
-      <a href="aster-v0.1.0-aarch64-apple-darwin.tar.gz">macOS Apple</a>
-      <a href="aster-v0.1.0-x86_64-apple-darwin.tar.gz">macOS Intel</a>
-      <a href="aster-v0.1.0-x86_64-pc-windows-msvc.zip">Windows</a>
+      <a href="aster-v0.2.0-x86_64-unknown-linux-musl.tar.gz">Linux</a>
+      <a href="aster-v0.2.0-aarch64-apple-darwin.tar.gz">macOS Apple</a>
+      <a href="aster-v0.2.0-x86_64-apple-darwin.tar.gz">macOS Intel</a>
+      <a href="aster-v0.2.0-x86_64-pc-windows-msvc.zip">Windows</a>
       <a href="SHA256SUMS">SHA256SUMS</a>
     </section>
     <section id="docs">Specification</section>

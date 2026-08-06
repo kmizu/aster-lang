@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "event_id": "note-001",
+  "event_time": "2026-08-06T12:00:00Z",
+  "agent_arguments": {
+    "scope": "workspace-001",
+    "user": "user-001"
+  },
+  "payload": {
+    "request": "Write the requested release note."
+  }
+}

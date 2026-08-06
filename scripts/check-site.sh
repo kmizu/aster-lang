@@ -41,14 +41,14 @@ done
 require_pattern index.html "<a\\s+[^>]*href=[\"']#main-content[\"']"
 require_text index.html 'styles.css'
 require_text index.html 'site.js'
-require_text index.html 'v0.1.0'
+require_text index.html 'v0.2.0'
 require_text index.html 'SHA256SUMS'
 
 for asset in \
-  aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz \
-  aster-v0.1.0-aarch64-apple-darwin.tar.gz \
-  aster-v0.1.0-x86_64-apple-darwin.tar.gz \
-  aster-v0.1.0-x86_64-pc-windows-msvc.zip; do
+  aster-v0.2.0-x86_64-unknown-linux-musl.tar.gz \
+  aster-v0.2.0-aarch64-apple-darwin.tar.gz \
+  aster-v0.2.0-x86_64-apple-darwin.tar.gz \
+  aster-v0.2.0-x86_64-pc-windows-msvc.zip; do
   require_text index.html "$asset"
 done
 

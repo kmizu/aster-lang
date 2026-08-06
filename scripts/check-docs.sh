@@ -20,6 +20,7 @@ required = [
     "README.md",
     "ARCHITECTURE.md",
     "docs/spec/aster-0.1.md",
+    "docs/spec/aster-host-protocol-0.2.md",
     "docs/design-docs/core-beliefs.md",
     "docs/design-docs/runtime-and-replay.md",
     "docs/design-docs/security-model.md",
@@ -27,6 +28,7 @@ required = [
     "docs/adr/0001-rust-workspace-and-layering.md",
     "docs/adr/0002-explicit-effect-machine.md",
     "docs/adr/0003-trace-canonicalization.md",
+    "examples/governed-note/README.md",
 ]
 errors = []
 for relative in required:
@@ -72,6 +74,24 @@ if registry.is_file() and reference.is_file():
     for code in registered:
         if code not in reference_text:
             errors.append(f"registered diagnostic missing from reference: {code}")
+
+host_protocol = root / "docs/spec/aster-host-protocol-0.2.md"
+if host_protocol.is_file():
+    protocol_text = host_protocol.read_text(encoding="utf-8")
+    for term in (
+        "effect_preview",
+        "effect_admission",
+        "execute_grant",
+        "effect_resolution",
+        "ASTER-HOST-11001",
+        "1 MiB",
+        "crash",
+        "resume",
+        "driver-free replay",
+        "malicious host",
+    ):
+        if term not in protocol_text:
+            errors.append(f"normative host protocol missing required term: {term}")
 
 active_plan = root / "docs/exec-plans/active/bootstrap-aster-0.1.md"
 if active_plan.exists() and not allow_active:

@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "aster-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aster-diagnostics",
  "aster-ir",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "aster-diagnostics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "aster-ir"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aster-diagnostics",
  "aster-semantics",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "aster-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aster-diagnostics",
  "aster-ir",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "aster-semantics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aster-diagnostics",
  "aster-syntax",
@@ -119,7 +119,7 @@ dependencies = [
 
 [[package]]
 name = "aster-syntax"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aster-diagnostics",
  "serde",

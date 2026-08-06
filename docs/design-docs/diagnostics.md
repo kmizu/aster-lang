@@ -156,6 +156,37 @@ One dimension has multiple limits. Keep exactly one deterministic limit.
 The fixed effect cost or fixture-declared maximum cannot be reserved. Increase
 the per-event limit or reduce maximum usage; the driver was not invoked.
 
+### ASTER-HOST-11001 — malformed or unsupported host frame
+
+The frame is invalid JSON/UTF-8, uses an unsupported schema or kind, or has an
+inexact nested payload. Send one schema-1 frame with no unknown fields.
+
+### ASTER-HOST-11002 — host reply out of sequence
+
+The reply is stale, duplicated, skipped, or unsolicited. Reply exactly once to
+the one outstanding ASTER message ID.
+
+### ASTER-HOST-11003 — host binding mismatch
+
+The session ID, request hash, or execution-grant hash differs from the
+outstanding request. Echo the exact binding values supplied by ASTER.
+
+### ASTER-HOST-11004 — invalid host usage
+
+A maximum or actual usage declaration has an unknown, duplicate, missing,
+exhausted, or over-maximum dimension. Declare only exact bounded variable
+usage.
+
+### ASTER-HOST-11005 — unexpected host EOF
+
+Host input ended while ASTER required a reply. Keep the transport open until a
+terminal frame is received.
+
+### ASTER-HOST-11006 — host frame write failure
+
+ASTER could not completely write and flush one protocol frame. Restore the
+transport and resume from the last durable snapshot and trace.
+
 ### ASTER-RUNTIME-9001 — typed runtime failure
 
 External JSON, fixture data, authority, or a VM transition violated its typed

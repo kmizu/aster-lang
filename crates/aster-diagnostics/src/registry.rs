@@ -72,6 +72,18 @@ pub enum KnownDiagnosticCode {
     DuplicateBudgetDimension,
     /// Runtime budget admission failed before an effect.
     BudgetExhausted,
+    /// Host frame is malformed or unsupported.
+    HostMalformedFrame,
+    /// Host reply is stale, duplicate, out of order, or unsolicited.
+    HostOutOfSequence,
+    /// Host session, request, or execution-grant binding differs.
+    HostBindingMismatch,
+    /// Host maximum or actual usage declaration is invalid.
+    HostInvalidUsage,
+    /// Host input ended while a reply was required.
+    HostUnexpectedEof,
+    /// Host protocol output could not be written completely.
+    HostWriteFailure,
     /// Typed runtime boundary or deterministic VM transition failed.
     RuntimeFailure,
     /// Replay semantics diverged from recorded evidence.
@@ -117,6 +129,12 @@ impl KnownDiagnosticCode {
             Self::UnknownBudgetDimension => "ASTER-BUDGET-11001",
             Self::DuplicateBudgetDimension => "ASTER-BUDGET-11002",
             Self::BudgetExhausted => "ASTER-BUDGET-11003",
+            Self::HostMalformedFrame => "ASTER-HOST-11001",
+            Self::HostOutOfSequence => "ASTER-HOST-11002",
+            Self::HostBindingMismatch => "ASTER-HOST-11003",
+            Self::HostInvalidUsage => "ASTER-HOST-11004",
+            Self::HostUnexpectedEof => "ASTER-HOST-11005",
+            Self::HostWriteFailure => "ASTER-HOST-11006",
             Self::RuntimeFailure => "ASTER-RUNTIME-9001",
             Self::ReplayDivergence => "ASTER-REPLAY-10001",
             Self::TraceMismatch => "ASTER-REPLAY-10002",
@@ -306,11 +324,48 @@ fn governance_explanation(code: &str) -> Option<ExplanationText> {
     })
 }
 
+fn host_explanation(code: &str) -> Option<ExplanationText> {
+    Some(match code {
+        "ASTER-HOST-11001" => (
+            "a host protocol frame is malformed or unsupported",
+            "JSON, UTF-8, schema, protocol version, kind, or an exact nested payload shape is invalid",
+            "send one supported schema-1 ASTER host frame with no unknown fields",
+        ),
+        "ASTER-HOST-11002" => (
+            "a host reply is stale, duplicate, out of order, or unsolicited",
+            "the reply does not answer the one currently outstanding ASTER message",
+            "reply exactly once to the current message_id before reading the next request",
+        ),
+        "ASTER-HOST-11003" => (
+            "a host session, request, or execution-grant binding does not match",
+            "the session ID, request hash, or execution-grant hash was substituted or crossed between runs",
+            "echo the exact identifiers from the outstanding ASTER frame",
+        ),
+        "ASTER-HOST-11004" => (
+            "a host maximum or actual usage declaration is invalid",
+            "a usage dimension is unknown, duplicated, missing, exhausted, or above its admitted maximum",
+            "declare each supported variable dimension once and report bounded exact actual usage",
+        ),
+        "ASTER-HOST-11005" => (
+            "host input ended before a required reply",
+            "standard input reached EOF while ASTER still had one outstanding protocol message",
+            "keep the transport open through the terminal completed or failed frame",
+        ),
+        "ASTER-HOST-11006" => (
+            "a host protocol frame could not be written completely",
+            "standard output failed while ASTER was writing or flushing one JSON Lines frame",
+            "restore the output transport and resume from the last durable snapshot and trace",
+        ),
+        _ => return None,
+    })
+}
+
 /// Looks up checked-in documentation for a registered diagnostic code.
 #[must_use]
 pub fn explain(code: &str) -> Option<Explanation> {
     let (meaning, cause, remediation) = parse_explanation(code)
         .or_else(|| governance_explanation(code))
+        .or_else(|| host_explanation(code))
         .or_else(|| {
             Some(match code {
                 "ASTER-NAME-1001" => (

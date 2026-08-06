@@ -15,3 +15,9 @@ This separation keeps the deterministic runtime responsible for control flow,
 budgets, capabilities, state, audit evidence, and replay. It also makes failures
 legible to humans and future coding agents: each transition has a type, an owner,
 and an inspectable representation.
+
+An external host is an adapter, not a principal inside the language. ASTER may
+show it an exact request for admission, but the host does not receive a
+sequencing grant until ASTER has reserved bounded usage and durably captured
+the continuation. That grant cannot mint a capability, alter a proposal, or
+replace a permit. Replay needs neither the adapter nor its ambient authority.
