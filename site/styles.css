@@ -12,6 +12,7 @@
   --line-strong: #4a4d50;
   --amber: #ffc247;
   --amber-soft: #d79a24;
+  --amber-on-paper: #805500;
   --red: #c3563f;
   --sans: Inter, "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
@@ -463,9 +464,10 @@ a:focus-visible {
   line-height: 1.7;
 }
 
-.comparison-aster > span,
-.comparison-aster strong {
-  color: var(--amber-soft);
+.why .section-index,
+.why .comparison-aster > span,
+.why .comparison-aster strong {
+  color: var(--amber-on-paper);
 }
 
 .quickstart {

@@ -98,4 +98,138 @@ for forbidden in 'src="//' "src='//" 'href="//' "href='//"; do
   fi
 done
 
+python3 - "$site_root/index.html" <<'PY'
+import html
+import pathlib
+import re
+import sys
+
+document = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def visible_text(fragment: str) -> str:
+    without_tags = re.sub(r"<[^>]+>", " ", fragment)
+    return " ".join(html.unescape(without_tags).split())
+
+
+evidence_match = re.search(
+    r"<section\b(?=[^>]*\bid=[\"']evidence[\"'])[^>]*>(.*?)</section>",
+    document,
+    re.IGNORECASE | re.DOTALL,
+)
+if evidence_match is None:
+    fail("missing executable evidence section")
+
+event_rows = {}
+for row_match in re.finditer(
+    r"<li\b[^>]*>(.*?)</li>",
+    evidence_match.group(1),
+    re.IGNORECASE | re.DOTALL,
+):
+    row_text = visible_text(row_match.group(1))
+    for event in ("effect_requested", "run_completed"):
+        if re.search(rf"\b{event}\b", row_text):
+            event_rows[event] = (row_text, row_match.group(0))
+
+for event in ("effect_requested", "run_completed"):
+    if event not in event_rows:
+        fail(f"missing replay evidence row: {event}")
+
+completion_text, completion_markup = event_rows["run_completed"]
+completion_lower = completion_text.lower()
+if (
+    "Recorded and replayed final outcomes agree" not in completion_text
+    or "request" in completion_lower
+    or "driver calls" in completion_lower
+):
+    fail(
+        "run_completed must describe final outcome agreement, "
+        "not request matching or driver calls"
+    )
+
+request_text, _ = event_rows["effect_requested"]
+if "Replay matches each regenerated request" not in request_text:
+    fail("effect_requested must describe replay request matching")
+
+outside_completion = document.replace(completion_markup, "", 1)
+if "driver calls 0" not in visible_text(outside_completion):
+    fail("driver calls 0 must be a separate replay property")
+PY
+
+python3 - "$site_root/styles.css" <<'PY'
+import pathlib
+import re
+import sys
+
+stylesheet = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    raise SystemExit(1)
+
+
+root_match = re.search(r":root\s*\{([^}]*)\}", stylesheet, re.DOTALL)
+if root_match is None:
+    fail("missing :root color tokens in styles.css")
+
+tokens = dict(
+    re.findall(
+        r"--([a-z0-9-]+)\s*:\s*(#[0-9a-f]{6})\s*;",
+        root_match.group(1),
+        re.IGNORECASE,
+    )
+)
+for token in ("paper", "amber-on-paper"):
+    if token not in tokens:
+        fail(f"missing site color token: --{token}")
+
+
+def relative_luminance(color: str) -> float:
+    channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+    linear = [
+        channel / 12.92
+        if channel <= 0.04045
+        else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+foreground = relative_luminance(tokens["amber-on-paper"])
+background = relative_luminance(tokens["paper"])
+lighter, darker = max(foreground, background), min(foreground, background)
+contrast = (lighter + 0.05) / (darker + 0.05)
+if contrast < 4.5:
+    fail(
+        "light Why amber text contrast must be at least 4.5:1 "
+        f"(got {contrast:.2f}:1)"
+    )
+
+required_selectors = {
+    ".why .section-index",
+    ".why .comparison-aster > span",
+    ".why .comparison-aster strong",
+}
+accent_selectors = set()
+for selectors, declarations in re.findall(r"([^{}]+)\{([^{}]*)\}", stylesheet):
+    if re.search(
+        r"(?:^|;)\s*color\s*:\s*var\(--amber-on-paper\)\s*(?:;|$)",
+        declarations,
+    ):
+        accent_selectors.update(selector.strip() for selector in selectors.split(","))
+
+missing = sorted(required_selectors - accent_selectors)
+if missing:
+    fail(
+        "light Why amber text must use --amber-on-paper for selectors: "
+        + ", ".join(missing)
+    )
+PY
+
 echo "static site contract is valid"

@@ -32,7 +32,22 @@ cat >"$valid_site/index.html" <<'EOF'
       <p>Driver-free replay</p>
       <p>34 trace entries</p>
     </section>
-    <section id="evidence">record and replay states match; driver calls 0</section>
+    <section id="evidence">
+      <p>record and replay states match</p>
+      <ol class="ledger">
+        <li>
+          <strong>effect_requested</strong>
+          <small>Replay matches each regenerated request</small>
+          <code>request match</code>
+        </li>
+        <li class="ledger-result">
+          <strong>run_completed</strong>
+          <small>Recorded and replayed final outcomes agree</small>
+          <code>outcome match</code>
+        </li>
+      </ol>
+      <p class="replay-property">Replay property: driver calls 0</p>
+    </section>
     <section id="boundary">
       Candidate Proposal Permit Reconciliation
       The desired write immutably binds its action, arguments, intent, risk,
@@ -59,7 +74,14 @@ cat >"$valid_site/index.html" <<'EOF'
 EOF
 
 cat >"$valid_site/styles.css" <<'EOF'
+:root {
+  --paper: #eee9de;
+  --amber-on-paper: #805500;
+}
 :focus-visible { outline: 2px solid #ffc247; }
+.why .section-index,
+.why .comparison-aster > span,
+.why .comparison-aster strong { color: var(--amber-on-paper); }
 .quickstart-step pre { scrollbar-color: #4a4d50 #07080a; scrollbar-width: thin; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none; } }
 EOF
@@ -192,6 +214,71 @@ if [[ "$output" != *"$expected"* ]]; then
   exit 1
 fi
 
+low_contrast_why_site="$fixture_root/low-contrast-why"
+mkdir -p "$low_contrast_why_site"
+cp -R "$valid_site/." "$low_contrast_why_site/"
+sed -i 's/--amber-on-paper: #805500/--amber-on-paper: #ffc247/' \
+  "$low_contrast_why_site/styles.css"
+
+set +e
+output=$("$checker" "$low_contrast_why_site" 2>&1)
+task_status=$?
+set -e
+
+if [[ $task_status -eq 0 ]]; then
+  echo "site checker accepted low-contrast amber text on the light Why section" >&2
+  exit 1
+fi
+
+expected="light Why amber text contrast must be at least 4.5:1"
+if [[ "$output" != *"$expected"* ]]; then
+  echo "site checker did not identify the low-contrast Why accent" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+incorrect_replay_attribution_site="$fixture_root/incorrect-replay-attribution"
+mkdir -p "$incorrect_replay_attribution_site"
+cp -R "$valid_site/." "$incorrect_replay_attribution_site/"
+python3 - "$incorrect_replay_attribution_site/index.html" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+text = text.replace(
+    "Replay matches each regenerated request",
+    "Canonical typed request recorded",
+)
+text = text.replace(
+    "Recorded and replayed final outcomes agree",
+    "Record and replay requests agree",
+)
+text = text.replace("<code>outcome match</code>", "<code>driver calls 0</code>")
+text = text.replace(
+    '<p class="replay-property">Replay property: driver calls 0</p>',
+    '<p class="replay-property">Replay has no fixture input</p>',
+)
+path.write_text(text, encoding="utf-8")
+PY
+
+set +e
+output=$("$checker" "$incorrect_replay_attribution_site" 2>&1)
+task_status=$?
+set -e
+
+if [[ $task_status -eq 0 ]]; then
+  echo "site checker accepted inaccurate replay evidence attribution" >&2
+  exit 1
+fi
+
+expected="run_completed must describe final outcome agreement, not request matching or driver calls"
+if [[ "$output" != *"$expected"* ]]; then
+  echo "site checker did not identify inaccurate replay evidence attribution" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
 incorrect_proposal_site="$fixture_root/incorrect-proposal"
 mkdir -p "$incorrect_proposal_site"
 cp -R "$valid_site/." "$incorrect_proposal_site/"
@@ -214,4 +301,4 @@ if [[ "$output" != *"$expected"* ]]; then
   exit 1
 fi
 
-echo "site checker accepts the static contract and rejects external dependencies, incorrect proposal copy, unconditional grant claims, missing malicious-host risks, missing execute_grant, and unthemed command scrollbars"
+echo "site checker accepts the static contract and rejects external dependencies, low-contrast Why accents, inaccurate replay evidence attribution, incorrect proposal copy, unconditional grant claims, missing malicious-host risks, missing execute_grant, and unthemed command scrollbars"

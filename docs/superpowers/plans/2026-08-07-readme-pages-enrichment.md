@@ -947,3 +947,39 @@ Pages deployment is updated.
   fix report.
 - Task 4 Step 7 remains unchecked and pending external integration and Pages
   deployment; no publication claim is made.
+
+### Final fix wave validation
+
+- Light Why contrast: introduced the paper-only `--amber-on-paper: #805500`
+  text token and applied it to the Why section index plus both ASTER-path text
+  selectors. The WCAG relative-luminance calculation measures `5.392:1`
+  against `--paper: #eee9de`, above the `4.5:1` normal-text threshold.
+  Dark-surface `--amber: #ffc247` and `--amber-soft: #d79a24` remain unchanged.
+- Replay evidence attribution: the ledger now identifies `effect_requested` as
+  the event at which replay matches each regenerated request and
+  `run_completed` as the recorded/replayed final-outcome comparison. `driver
+  calls 0 on replay` remains a separate proof result rather than a
+  `run_completed` payload or event meaning.
+- TDD RED evidence: before checker implementation,
+  `./scripts/tests/check-site.sh` exited 1 with `site checker accepted
+  low-contrast amber text on the light Why section`; after the contrast checker
+  was added, production `./scripts/check-site.sh` exited 1 with `missing site
+  color token: --amber-on-paper`. The replay-attribution fixture then exited 1
+  with `site checker accepted inaccurate replay evidence attribution`; after
+  that contract was enforced, the production page exited 1 with
+  `run_completed must describe final outcome agreement, not request matching
+  or driver calls`.
+- Focused GREEN evidence: `./scripts/tests/check-site.sh`,
+  `./scripts/check-site.sh`, `./scripts/check-docs.sh`, and `git diff --check`
+  exited 0 after the fixes. Fresh Firefox 148 section renders at `1440x1200`
+  and `390x844` showed the darker paper accent and corrected ledger labels
+  without clipping, overlap, or horizontal page overflow.
+- Full gate evidence before this evidence-only plan update:
+  `./scripts/check.sh` exited 0 with 156 workspace tests passing and 0 failing,
+  followed by successful checker self-tests, architecture, production-Rust,
+  documentation, static-site, and release validation. The required final gate
+  is rerun after this tracked plan edit and recorded in the ignored final-fix
+  report.
+- Task 4 Step 7 remains unchecked. Public Pages byte comparison, deployed
+  anchor inspection, publication, and deployment remain pending external
+  integration; no public-site update is claimed.
