@@ -56,7 +56,9 @@ for text in \
   'effect_admission' \
   'execute_grant' \
   'effect_resolution' \
-  'A preview is not authority.'; do
+  'A preview is not authority.' \
+  'A conforming host must not execute before receiving the matching grant.' \
+  'A malicious host can act early, falsify provider behavior, or under-report usage by using authority it already has.'; do
   require_text index.html "$text"
 done
 

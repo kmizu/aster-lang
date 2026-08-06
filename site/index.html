@@ -331,7 +331,7 @@ cmp "$ASTER_DEMO_DIR/record-state.json" \
           <li class="protocol-step reveal" data-reveal>
             <span>03</span>
             <strong>execute_grant</strong>
-            <p>Only the matching grant permits execution after snapshot and trace persistence.</p>
+            <p>A conforming host must not execute before receiving the matching grant. ASTER emits it only after snapshot and trace persistence.</p>
           </li>
           <li class="protocol-step reveal" data-reveal>
             <span>04</span>
@@ -340,7 +340,7 @@ cmp "$ASTER_DEMO_DIR/record-state.json" \
           </li>
         </ol>
         <p class="host-warning reveal" data-reveal>
-          The host remains outside ASTER's trust boundary. Process isolation and least privilege remain deployment responsibilities.
+          The protocol does not sandbox the host. A malicious host can act early, falsify provider behavior, or under-report usage by using authority it already has. Process isolation, least privilege, and provider-specific controls remain deployment responsibilities.
         </p>
       </section>
 

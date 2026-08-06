@@ -41,6 +41,8 @@ cat >"$valid_site/index.html" <<'EOF'
     <section id="protocol">
       effect_preview effect_admission execute_grant effect_resolution
       A preview is not authority.
+      A conforming host must not execute before receiving the matching grant.
+      A malicious host can act early, falsify provider behavior, or under-report usage by using authority it already has.
     </section>
     <section id="download">
       <a href="aster-v0.2.0-x86_64-unknown-linux-musl.tar.gz">Linux</a>
@@ -120,6 +122,54 @@ if [[ "$output" != *"$expected"* ]]; then
   exit 1
 fi
 
+missing_conforming_host_site="$fixture_root/missing-conforming-host"
+mkdir -p "$missing_conforming_host_site"
+cp -R "$valid_site/." "$missing_conforming_host_site/"
+sed -i \
+  's/A conforming host must not execute before receiving the matching grant\./Only the matching grant permits execution./' \
+  "$missing_conforming_host_site/index.html"
+
+set +e
+output=$("$checker" "$missing_conforming_host_site" 2>&1)
+task_status=$?
+set -e
+
+if [[ $task_status -eq 0 ]]; then
+  echo "site checker accepted an unconditional execute_grant claim" >&2
+  exit 1
+fi
+
+expected="missing site contract text in index.html: A conforming host must not execute before receiving the matching grant."
+if [[ "$output" != *"$expected"* ]]; then
+  echo "site checker did not identify the missing conforming-host obligation" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+missing_malicious_host_site="$fixture_root/missing-malicious-host"
+mkdir -p "$missing_malicious_host_site"
+cp -R "$valid_site/." "$missing_malicious_host_site/"
+sed -i \
+  's/A malicious host can act early, falsify provider behavior, or under-report/A malicious host remains outside the trust boundary and may under-report/' \
+  "$missing_malicious_host_site/index.html"
+
+set +e
+output=$("$checker" "$missing_malicious_host_site" 2>&1)
+task_status=$?
+set -e
+
+if [[ $task_status -eq 0 ]]; then
+  echo "site checker accepted a page without explicit malicious-host risks" >&2
+  exit 1
+fi
+
+expected="missing site contract text in index.html: A malicious host can act early, falsify provider behavior, or under-report usage by using authority it already has."
+if [[ "$output" != *"$expected"* ]]; then
+  echo "site checker did not identify missing malicious-host risks" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
 missing_scrollbar_site="$fixture_root/missing-scrollbar"
 mkdir -p "$missing_scrollbar_site"
 cp -R "$valid_site/." "$missing_scrollbar_site/"
@@ -164,4 +214,4 @@ if [[ "$output" != *"$expected"* ]]; then
   exit 1
 fi
 
-echo "site checker accepts the static contract and rejects external dependencies, incorrect proposal copy, missing execute_grant, and unthemed command scrollbars"
+echo "site checker accepts the static contract and rejects external dependencies, incorrect proposal copy, unconditional grant claims, missing malicious-host risks, missing execute_grant, and unthemed command scrollbars"

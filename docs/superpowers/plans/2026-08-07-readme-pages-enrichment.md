@@ -926,3 +926,24 @@ Pages deployment is updated.
   plan, README, site, and checker paths and no generated or sensitive artifacts.
 - Publication: public Pages byte comparison and anchor inspection remain
   pending external integration and deployment. No public-site update is claimed.
+
+### Fix round 1 validation
+
+- Corrected the Pages grant claim to make waiting for `execute_grant` an
+  explicit conforming-host protocol obligation rather than an unconditional
+  confinement claim. The adjacent warning now states that a malicious host can
+  act early, falsify provider behavior, or under-report usage by using authority
+  it already has.
+- TDD RED evidence: `./scripts/tests/check-site.sh` exited 1 with
+  `site checker accepted an unconditional execute_grant claim` before the site
+  checker enforced the conforming-host and malicious-host limitations.
+- TDD GREEN and focused evidence: `./scripts/tests/check-site.sh`,
+  `./scripts/check-site.sh`, `./scripts/check-docs.sh`, and `git diff --check`
+  exited 0. The site self-test reports that it rejects unconditional grant
+  claims and missing malicious-host risks.
+- `./scripts/check.sh` exited 0 with 156 workspace tests passing and 0 failing
+  before this evidence-only plan update. Per Task 4, the same full gate is rerun
+  after this final tracked edit; that post-edit result is recorded in the Task 4
+  fix report.
+- Task 4 Step 7 remains unchecked and pending external integration and Pages
+  deployment; no publication claim is made.
