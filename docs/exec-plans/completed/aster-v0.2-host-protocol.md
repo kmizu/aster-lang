@@ -136,7 +136,17 @@ The step-by-step implementation plan is
   the first deployment stalled until cancellation, and same-commit recovery
   runs were cancelled because Pages deployment build versions must be unique.
   A post-release evidence commit provides a new immutable deployment version;
-  Pages content and link verification remain required before plan completion.
+  Pages content and link verification remained required at that checkpoint.
+- 2026-08-06: Explicitly cancelled the stale Pages deployment through the
+  official API, which returned HTTP 204 and `deployment_cancelled`. Three new
+  build versions were then accepted but remained `deployment_queued` beyond
+  the deploy action's ten-minute maximum. A proposed 30-minute override was
+  rejected by the action's own 600000 ms cap and was removed in PR #6 after
+  full local and dual CI verification. The final deployment continued after
+  its Actions timeout and reached backend status `succeed`. The public Pages
+  root then returned HTTP 200 with the v0.2.0 headline and all four archive
+  links plus `SHA256SUMS`; every linked asset also returned HTTP 200. A final
+  workflow run on a fresh evidence commit remains before closing the plan.
 
 ## Surprises & Discoveries
 
@@ -253,6 +263,7 @@ isolation, least privilege, protected trace/snapshot storage, provider-specific
 authenticity controls, and idempotent recovery.
 
 The public PR, merge, annotated tag, release workflow, and downloaded-asset
-evidence are recorded above. The immutable release is healthy; the remaining
-completion item is a successful Pages deployment from a new post-release
-commit followed by external v0.2.0 headline and link verification.
+evidence are recorded above. The immutable release and public v0.2.0 Pages
+site are healthy. The remaining completion item is one fresh Pages workflow
+run after the delayed backend queue recovered, followed by final repository
+and tag identity checks.
