@@ -58,7 +58,10 @@
 
 - [ ] **Step 1: Add a failing README-boundary test**
 
-Extend `scripts/tests/check-docs.sh` after the existing host-protocol mutation test. Copy the valid contract fixture, remove the driver-free wording from its README, run the checker, and require this diagnostic:
+Extend `scripts/tests/check-docs.sh` immediately after `contract_root` is copied
+and before the existing host-protocol mutation test changes that fixture. Copy
+the still-valid contract fixture, remove the driver-free wording from its
+README, run the checker, and require this diagnostic:
 
 ```bash
 readme_contract_root="$fixture_root/readme-contract"
