@@ -92,7 +92,7 @@ mod tests {
         exact.resize(HOST_PROTOCOL_MAX_LINE_BYTES, b' ');
         exact.push(b'\n');
         let mut transport = HostTransport::new(Cursor::new(exact), Vec::new());
-        transport.read_frame().expect("exact bound is accepted");
+        assert!(transport.read_frame().is_ok(), "exact bound is accepted");
 
         let mut oversized = ACK.as_bytes().to_vec();
         oversized.resize(HOST_PROTOCOL_MAX_LINE_BYTES + 1, b' ');

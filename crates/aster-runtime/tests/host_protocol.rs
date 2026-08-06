@@ -437,6 +437,68 @@ fn host_session_restore_reemits_the_same_grant_without_readmission() {
 }
 
 #[test]
+fn host_session_restore_reemits_uncertain_write_without_readmission() {
+    let program = meeting_program();
+    let mut host =
+        HostSession::start(program.clone(), start_request()).expect("host session starts");
+    let mut driver = fixture_driver();
+    let mut preview: Option<FixturePreview> = None;
+    let hello = host.outbound().expect("hello");
+    let mut outbound = host.reply(acknowledge(&hello)).expect("first preview");
+
+    let (original_grant, snapshot, trace) = loop {
+        outbound = match &outbound.message {
+            HostOutboundMessage::EffectPreview(effect) => {
+                let next_preview = driver.preview(&effect.request).expect("fixture previews");
+                let reply = admitted(
+                    &outbound,
+                    &effect.request.request_hash,
+                    next_preview.max_usage.clone(),
+                );
+                preview = Some(next_preview);
+                host.reply(reply).expect("grant follows admission")
+            }
+            HostOutboundMessage::ExecuteGrant(grant) if grant.request.kind == EffectKind::Write => {
+                let snapshot = host
+                    .snapshots()
+                    .last()
+                    .expect("write continuation is sealed")
+                    .clone();
+                break (grant.clone(), snapshot, host.trace().clone());
+            }
+            HostOutboundMessage::ExecuteGrant(grant) => {
+                let next_preview = preview.take().expect("preview precedes grant");
+                let resolution = driver
+                    .resolve(&grant.request, &next_preview)
+                    .expect("fixture resolves");
+                host.reply(reply_to(
+                    &outbound,
+                    HostInboundMessage::EffectResolution(HostEffectResolution {
+                        request_hash: resolution.request_hash,
+                        execution_grant_hash: grant.execution_grant_hash.clone(),
+                        payload: resolution.payload,
+                        actual_usage: resolution.actual_usage,
+                    }),
+                ))
+                .expect("resolution advances")
+            }
+            other => panic!("unexpected host message {other:?}"),
+        };
+    };
+
+    let mut restored =
+        HostSession::restore(program, snapshot, trace).expect("write continuation restores");
+    let hello = restored.outbound().expect("fresh hello");
+    let resumed = restored
+        .reply(acknowledge(&hello))
+        .expect("write grant follows handshake");
+    assert_eq!(
+        resumed.message,
+        HostOutboundMessage::ExecuteGrant(original_grant)
+    );
+}
+
+#[test]
 fn host_session_rejects_grant_substitution_and_actual_usage_overflow() {
     let mut substituted =
         HostSession::start(meeting_program(), start_request()).expect("host session starts");

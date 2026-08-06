@@ -92,6 +92,26 @@ The step-by-step implementation plan is
   checker derives the same version and rejects a synthetic Cargo 0.2.1 versus
   notes/site 0.2.0 drift. Release/site test suites, release/site repository
   checks, YAML parsing, `aster 0.2.0`, and governed-note checking passed.
+- 2026-08-06: The first final `./scripts/check.sh` run exposed one policy
+  violation in a `#[cfg(test)]` block under production `src`: a success-only
+  `.expect()` in the host transport size test. The production scanner
+  intentionally scans source files without interpreting cfg attributes. The
+  assertion now checks `is_ok()` without weakening the scanner; its checker
+  regression, focused boundary test, and a fresh full gate passed.
+- 2026-08-06: Codex acted directly as the external host in a mode-700 temporary
+  workspace. The live sequence was model/read/approval/write/read. The note
+  hash remained `9160d4be...` (`before\n`) at write preview, changed only after
+  the matching grant to `0af71c02...` (`ship v0.2\n`), then reconciled. Five
+  snapshots and 34 trace entries were produced. Driver-free CLI replay opened
+  no host session and produced byte-identical record/replay state files with
+  SHA-256 `0d9c39cf...`.
+- 2026-08-06: Final inline review found no critical defects and one important
+  direct-coverage gap: restore-to-identical-grant was tested with a model
+  effect, while the approved design explicitly named an uncertain write. The
+  new `host_session_restore_reemits_uncertain_write_without_readmission` test
+  drives through approval, stops at the write grant, restores its sealed
+  continuation, and proves the first post-handshake frame is the identical
+  write grant rather than a second preview/admission.
 
 ## Surprises & Discoveries
 
@@ -127,6 +147,9 @@ The step-by-step implementation plan is
   again in publish checks. Removing the matrix `bundle`/`asset` fields and
   deriving all four names from Cargo leaves the site and notes as deliberate
   public-copy assertions while eliminating workflow drift.
+- A `#[cfg(test)]` module inside a production `src` file is still in scope for
+  the repository's textual panic-policy checker. Tests in that location must
+  avoid forbidden APIs even though test targets elsewhere may use them.
 
 ## Decision Log
 
@@ -171,8 +194,38 @@ The step-by-step implementation plan is
   checkout and Cargo/tag equality still prevent a recovery run from publishing
   a branch or mismatched version.
 
+## Requirement audit
+
+| Approved requirement | Direct evidence |
+| --- | --- |
+| One pure execution path | `crates/aster-runtime/src/run.rs` owns `RecordSession`; fixture `record_run_evidenced` and `HostSession` both delegate to it. Record/replay tests remain green. |
+| Exact envelopes, fields, and sequencing | `crates/aster-runtime/src/host.rs`; `hello_has_the_exact_envelope`, strict/duplicate/unknown-field tests, and out-of-sequence/cross-session tests in `host_protocol.rs`. |
+| Preview is not authority; budget and durable continuation precede grant | `RecordSession::admit`, `drive_host`, `host_session_handshake_precedes_two_phase_effect_execution`, CLI crash/resume, and governed-note preview-before-write assertions. |
+| Request/grant binding and bounded usage | `ExecutionGrant::for_admitted`, `HostEffectResolution::validate_against`, substitution, duplicate dimension, overflow, and exhaustion tests. |
+| Existing write governance remains exclusive | The VM still creates write requests only after intent/proposal/policy/permit checks; governance/machine suites and governed-note reconciliation pass unchanged. |
+| Crash/resume never readmits an uncertain effect | `host_session_restore_reemits_the_same_grant_without_readmission`, `host_resume_reemits_the_durable_execution_grant`, and the write-specific `host_session_restore_reemits_uncertain_write_without_readmission`. |
+| Bounded strict transport and stable failures | `crates/aster-cli/src/host_io.rs`, exact 1 MiB/one-byte-over tests, malformed JSON/UTF-8/version/unknown-field/EOF black-box cases, and `ASTER-HOST-11001` through `11006` registry tests. |
+| No payload or secret disclosure through failures | Runtime and CLI sentinel tests cover typed errors, `failed`, stderr, trace, snapshots, and output state; existing secret serialization/snapshot tests remain green. |
+| Replay invokes no host or driver | `replay_run` has no driver/host parameter; runtime all-effects replay test, CLI governed-note test, and the manual Codex-host replay all produce identical state. |
+| Fixture compatibility | Meeting fixture record/replay and the complete runtime/CLI regression suites pass through the shared session adapter. |
+| Real host self-use | `examples/governed-note`, its black-box coding-host test, and the manual mode-700 PTY session prove model/read/approval/write/read, write-after-grant, reconciliation, and byte-identical replay. |
+| Normative and explanatory documentation | `docs/spec/aster-host-protocol-0.2.md` plus language, architecture, runtime, security, diagnostics, README, and example docs; the docs checker rejects a missing required protocol term. |
+| Versioned four-platform release | Workspace/lockfile are 0.2.0; release workflow derives names/notes from Cargo, runs four native suites/smokes, validates exact members/checksums, and gates publish on all builds. Release/site drift tests and YAML parsing pass. |
+
 ## Outcomes & Retrospective
 
-Not complete. This section will record released behavior, exact validation and
-artifact evidence, limitations, and residual malicious-host risk after the
-public v0.2.0 audit.
+The implementation and release candidate satisfy the approved design and
+repository invariants. After the write-resume review fix and canonical
+formatting, the fresh moved-plan `./scripts/check.sh` gate passed 156 tests
+across all crates, strict clippy/formatting, architecture, documentation,
+production panic policy, site, and release contracts. `./scripts/check-docs.sh`
+and `git diff --check` also passed on the same final tree.
+
+The host boundary deliberately does not sandbox its host. A malicious host can
+act before a grant, falsify provider behavior, or under-report usage using
+authority it already possesses. Production deployment still requires process
+isolation, least privilege, protected trace/snapshot storage, provider-specific
+authenticity controls, and idempotent recovery.
+
+Public PR, merge, annotated tag, workflow, Pages, and downloaded-asset evidence
+are appended here after the immutable `v0.2.0` publication audit.
