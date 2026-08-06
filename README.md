@@ -14,8 +14,10 @@ driver.
 
 ## Status and scope
 
-ASTER 0.1 is an implemented experimental reference processor and is not
-production-ready. The 0.1 scope is one-file programs, non-generic user types,
+ASTER 0.1 is the implemented source-language version and is not
+production-ready. The runtime also implements the version 1 ASTER 0.2 host
+protocol for a bounded external host. The language scope is one-file programs,
+non-generic user types,
 finite, lexically scoped pure computation, explicit
 model/read/approval/write effects, fixture-backed drivers, transactional state,
 hash-chained traces, snapshots, resume, and semantic replay.
@@ -65,8 +67,53 @@ aster-diagnostics <- aster-syntax <- aster-semantics <- aster-ir <- aster-runtim
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), the
-[normative specification](docs/spec/aster-0.1.md), and the
+[normative language specification](docs/spec/aster-0.1.md), the
+[normative host protocol](docs/spec/aster-host-protocol-0.2.md), and the
 [ASTER 0.1 completion plan](docs/exec-plans/completed/complete-aster-0.1.md).
+
+## Governed external host
+
+`aster host` exposes typed effect requests to an external process over bounded
+JSON Lines. A preview is not authority: the host may execute only after ASTER
+has reserved budget, persisted a sealed continuation, and emitted the matching
+execution grant. Standard output is protocol-only; diagnostics use standard
+error.
+
+Start the bundled synthetic note program with a bidirectional host attached to
+standard input and output:
+
+```bash
+cargo run -p aster-cli --bin aster -- host examples/governed-note/main.aster \
+  --agent NoteKeeper \
+  --event message \
+  --input examples/governed-note/event.json \
+  --state examples/governed-note/initial-state.json \
+  --capabilities examples/governed-note/capabilities.json \
+  --trace .aster/note.trace.jsonl \
+  --snapshot-dir .aster/note-snapshots \
+  --output-state .aster/note.record-state.json
+```
+
+After a crash with an admitted pending effect, reconnect the host with:
+
+```bash
+cargo run -p aster-cli --bin aster -- host-resume \
+  examples/governed-note/main.aster \
+  --snapshot .aster/note-snapshots/snapshot-0000.json \
+  --trace .aster/note.trace.jsonl \
+  --snapshot-dir .aster/note-resume-snapshots \
+  --output-state .aster/note.record-state.json
+```
+
+The end-to-end coding-host analogue uses only a temporary workspace, performs
+the write after its grant, reconciles it, and proves driver-free replay:
+
+```bash
+cargo test -p aster-cli --test host_cli codex_style_host -- --nocapture
+```
+
+See the [governed-note walkthrough](examples/governed-note/README.md) and the
+[host protocol specification](docs/spec/aster-host-protocol-0.2.md).
 
 ## Meeting scheduler workflow
 

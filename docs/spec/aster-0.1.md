@@ -1,6 +1,9 @@
 # ASTER 0.1 Language and Runtime Specification
 
 Status: normative for the implemented ASTER 0.1 experimental vertical slice.
+The external runtime wire boundary is specified separately by the
+[ASTER 0.2 host protocol](aster-host-protocol-0.2.md); it does not change this
+source-language version.
 
 ## Source and lexical form
 

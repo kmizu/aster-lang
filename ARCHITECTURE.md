@@ -11,8 +11,9 @@ flow, and external effects so that no convenient shortcut can bypass policy.
   affine-use and termination checks.
 - `aster-ir`: typed serializable instructions and explicit suspension points.
 - `aster-runtime`: VM, grants, budgets, proposals, permits, drivers, state,
-  traces, snapshots, replay, and resume.
-- `aster-cli`: file-boundary validation and orchestration only.
+  traces, snapshots, replay, resume, and transport-independent host sessions.
+- `aster-cli`: file-boundary validation, bounded stdio transport, and
+  orchestration only.
 
 Dependencies point left in the chain shown in [README.md](README.md).
 [`scripts/check-architecture.sh`](scripts/check-architecture.sh) enforces this
@@ -60,12 +61,22 @@ content hash. Its pure-expression representation cannot encode model, tool,
 authorization, commit, or reconciliation effects; those remain distinct
 instructions even when nested in a larger source expression.
 
-Before yielding to a driver, the runtime resolves and verifies an exact grant,
-reserves the declared budget, and writes a snapshot. It then validates and
-settles the resolution. At permit issuance and immediately before a write it
-revalidates the proposal seal, then consumes the matching issued permit. State
-mutations accumulate in a transaction and publish atomically only after
-successful handler completion.
+Before yielding to a fixture driver, the runtime resolves and verifies an exact
+grant, reserves the declared budget, and writes a snapshot. For an external
+host, the same boundary is split into three layers:
+
+```text
+RecordSession (VM, admission, trace, snapshot, settlement)
+  -> HostSession (exact protocol frames, sequencing, grant binding)
+    -> aster-cli HostTransport (bounded JSONL stdin/stdout and atomic files)
+```
+
+`effect_preview` does not permit execution. The CLI persists the admitted
+snapshot and trace before it emits `execute_grant`; the runtime then validates
+and settles the matching resolution. At permit issuance and immediately before
+a write it revalidates the proposal seal, then consumes the matching issued
+permit. State mutations accumulate in a transaction and publish atomically
+only after successful handler completion.
 
 ## Recording, replay, and resume
 
@@ -77,7 +88,14 @@ driver. Resume restores the serializable instruction pointer, frames, locals,
 state transaction, budget, capability fingerprint, affine ledger, and trace
 position before accepting one matching resolution.
 
+`HostSession` is pure and transport-independent. A resumed host session
+performs a new handshake for the same run and re-emits the grant reconstructed
+from the sealed continuation. Replay remains below the host boundary and has
+neither a host transport nor a driver parameter.
+
 The full rationale is in
 [runtime-and-replay.md](docs/design-docs/runtime-and-replay.md). The
+[normative wire contract](docs/spec/aster-host-protocol-0.2.md) specifies
+sequencing, fields, durability, and disclosure. The
 implementation sequence and validation evidence are recorded in the
 [completed execution plan](docs/exec-plans/completed/complete-aster-0.1.md).

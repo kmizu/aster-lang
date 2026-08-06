@@ -33,7 +33,7 @@ The step-by-step implementation plan is
 - [x] Add bounded JSONL CLI transport, persistence, and crash resume.
 - [x] Register stable diagnostics and prove payload redaction.
 - [x] Add the governed-note self-use example and end-to-end host proof.
-- [ ] Make the protocol and its trust boundary normative in documentation.
+- [x] Make the protocol and its trust boundary normative in documentation.
 - [ ] Bump v0.2.0 and generalize four-platform release automation and site.
 - [ ] Pass full validation, merge, tag, publish, and externally audit v0.2.0.
 
@@ -77,6 +77,13 @@ The step-by-step implementation plan is
   write only after the matching durable grant, reconciled the result, and
   reproduced the final state byte-for-byte with driver-free replay. Full CLI
   tests and strict CLI clippy passed.
+- 2026-08-06: Added the normative ASTER 0.2 host protocol with exact envelopes,
+  payload fields, MUST/MUST NOT sequencing, usage settlement, durability,
+  resume, terminal frames, diagnostics, disclosure, compatibility, replay,
+  and malicious-host limits. Updated language, architecture, runtime, security,
+  core-belief, example, and README documentation. The docs checker now rejects
+  a missing required protocol term; its regression test, the repository docs
+  check, architecture check, and governed-note source check all passed.
 
 ## Surprises & Discoveries
 
@@ -104,6 +111,10 @@ The step-by-step implementation plan is
   qualified tool-name segments. The example therefore names the tool methods
   `Workspace.fetch` and `Workspace.store`; their governed effect kinds remain
   `read` and `write`.
+- The protocol's durable point has two layers: `RecordSession` creates and
+  hashes the admitted snapshot, then the CLI atomically writes every snapshot
+  and the current trace before putting `execute_grant` on stdout. Documenting
+  only the in-memory transition would overstate crash safety.
 
 ## Decision Log
 
@@ -141,6 +152,9 @@ The step-by-step implementation plan is
   instead of expanding qualified-name grammar solely for the self-use example.
   The exact synthetic note allowlist provides an auditable non-empty bounded
   validator without adding a new text-length built-in.
+- Treat the wire contract as a separate versioned normative specification.
+  The ASTER 0.1 language spec links to it but does not claim a source-language
+  version change.
 
 ## Outcomes & Retrospective
 
