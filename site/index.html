@@ -25,7 +25,7 @@
         <a href="#download">Download</a>
         <a href="https://github.com/kmizu/aster-lang">GitHub</a>
       </nav>
-      <span class="header-version">v0.1.0</span>
+      <span class="header-version">v0.2.0</span>
     </header>
 
     <main id="main-content">
@@ -33,7 +33,7 @@
         <div class="hero-wordmark" aria-hidden="true">ASTER</div>
         <div class="hero-glow" aria-hidden="true"></div>
         <div class="hero-content">
-          <p class="eyebrow">Deterministic agent runtime / v0.1.0</p>
+          <p class="eyebrow">Deterministic agent runtime / v0.2.0</p>
           <p class="status-mark">Experimental reference processor</p>
           <h1 id="hero-title">Authority<br>before action.</h1>
           <p class="hero-lede">
@@ -42,11 +42,11 @@
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="#download">
-              Download v0.1.0 <span aria-hidden="true">↓</span>
+              Download v0.2.0 <span aria-hidden="true">↓</span>
             </a>
             <a
               class="button button-secondary"
-              href="https://github.com/kmizu/aster-lang/blob/v0.1.0/docs/spec/aster-0.1.md"
+              href="https://github.com/kmizu/aster-lang/blob/v0.2.0/docs/spec/aster-host-protocol-0.2.md"
             >
               Read the specification <span aria-hidden="true">↗</span>
             </a>
@@ -121,44 +121,46 @@
           <p class="section-index">02 / Executable evidence</p>
           <h2 id="evidence-title">From source to replay,<br>the boundary stays visible.</h2>
           <p>
-            The bundled meeting scheduler exercises inference, validation, a
-            read, human approval, a write, reconciliation, transactional state,
-            snapshots, and driver-free replay.
+            The bundled governed-note program crosses the v0.2 host boundary:
+            model, read, human approval, granted write, reconciliation,
+            transactional state, snapshots, and driver-free replay.
           </p>
         </div>
 
         <div class="evidence-grid">
-          <div class="source-panel reveal" data-reveal aria-label="ASTER meeting workflow source">
+          <div class="source-panel reveal" data-reveal aria-label="ASTER governed note source">
             <div class="panel-label">
-              <span>meeting-scheduler/main.aster</span>
-              <span>governed flow</span>
+              <span>governed-note/main.aster</span>
+              <span>host-governed flow</span>
             </div>
-            <pre><code><span class="code-dim">// Untrusted input cannot cross the boundary.</span>
-<span class="code-keyword">let</span> candidate = <span class="code-effect">infer</span> ParseMeeting(
-  text = incoming.value.text,
-) using @planner;
+            <pre><code><span class="code-dim">// Model output stays opaque until validation.</span>
+<span class="code-keyword">let</span> candidate = (<span class="code-effect">infer</span> DraftNote(
+  request = msg.value.request,
+) using @writer)?;
 
-<span class="code-keyword">let</span> checked = <span class="code-effect">validate</span> candidate
-  with MeetingValidator;
+<span class="code-keyword">let</span> checked = (<span class="code-effect">validate</span> candidate
+  with NoteRules)?;
+<span class="code-keyword">let</span> before = (<span class="code-effect">observe</span>
+  Workspace.fetch(scope = scope))?;
 
-<span class="code-keyword">let</span> slots = <span class="code-effect">observe</span>
-  calendar.free_slots(request = checked.value);
+<span class="code-keyword">let</span> purpose = <span class="code-effect">intent</span> SaveNote {
+  basis = [provenance(msg), provenance(checked),
+           provenance(before)];
+  expires_at = add_seconds(event.time, 120);
+};
 
-<span class="code-keyword">let</span> action = <span class="code-effect">intent</span> Calendar.CreateEvent {
-  basis = checked.value.provenance;
-  title = checked.value.title;
-  start = slots.value.first;
-}
-
-<span class="code-keyword">let</span> proposal = <span class="code-effect">propose</span>
-  calendar.create(action = action) <span class="code-keyword">for</span> action;
-<span class="code-keyword">let</span> permit = <span class="code-effect">authorize</span> proposal
-  using SchedulingPolicy;
-<span class="code-keyword">let</span> receipt = <span class="code-effect">commit</span> proposal
-  with permit;
-<span class="code-keyword">return</span> <span class="code-effect">reconcile</span> receipt against
-  <span class="code-effect">observe</span> calendar.lookup(id = receipt.value.id)
-  with EventMatches;</code></pre>
+<span class="code-keyword">let</span> proposal = <span class="code-effect">propose</span> Workspace.store(
+  scope = scope, content = checked.value.content,
+  request_id = event.id,
+) <span class="code-keyword">for</span> purpose;
+<span class="code-keyword">let</span> permit = (<span class="code-effect">authorize</span> proposal
+  using NotePolicy)?;
+<span class="code-keyword">let</span> receipt = (<span class="code-effect">commit</span> proposal
+  with permit)?;
+<span class="code-keyword">let</span> actual = (<span class="code-effect">observe</span>
+  Workspace.lookup(scope = scope))?;
+<span class="code-keyword">let</span> confirmed = (<span class="code-effect">reconcile</span> receipt
+  against actual with NoteMatches)?;</code></pre>
           </div>
 
           <div class="ledger reveal" data-reveal aria-label="Recorded ASTER trace">
@@ -202,7 +204,7 @@
         </div>
 
         <div class="evidence-rule reveal" data-reveal>
-          <p>Record mode invokes the fixture driver.</p>
+          <p>Record or host mode executes only admitted effects.</p>
           <span aria-hidden="true">≠</span>
           <p>Replay mode has no driver parameter.</p>
         </div>
@@ -210,7 +212,7 @@
 
       <section class="download section-light" id="download" aria-labelledby="download-title">
         <div class="download-intro reveal" data-reveal>
-          <p class="section-index">03 / ASTER v0.1.0</p>
+          <p class="section-index">03 / ASTER v0.2.0</p>
           <h2 id="download-title">Run the reference processor.</h2>
           <p>
             Choose a native command-line archive. Every build ships with this
@@ -218,11 +220,11 @@
           </p>
         </div>
 
-        <div class="download-list" aria-label="ASTER v0.1.0 downloads">
+        <div class="download-list" aria-label="ASTER v0.2.0 downloads">
           <a
             class="download-row reveal"
             data-reveal
-            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz"
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.2.0/aster-v0.2.0-x86_64-unknown-linux-musl.tar.gz"
           >
             <span class="download-platform">Linux</span>
             <span class="download-target">x86_64 / musl</span>
@@ -232,7 +234,7 @@
           <a
             class="download-row reveal"
             data-reveal
-            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/aster-v0.1.0-aarch64-apple-darwin.tar.gz"
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.2.0/aster-v0.2.0-aarch64-apple-darwin.tar.gz"
           >
             <span class="download-platform">macOS</span>
             <span class="download-target">Apple Silicon</span>
@@ -242,7 +244,7 @@
           <a
             class="download-row reveal"
             data-reveal
-            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/aster-v0.1.0-x86_64-apple-darwin.tar.gz"
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.2.0/aster-v0.2.0-x86_64-apple-darwin.tar.gz"
           >
             <span class="download-platform">macOS</span>
             <span class="download-target">Intel</span>
@@ -252,7 +254,7 @@
           <a
             class="download-row reveal"
             data-reveal
-            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/aster-v0.1.0-x86_64-pc-windows-msvc.zip"
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.2.0/aster-v0.2.0-x86_64-pc-windows-msvc.zip"
           >
             <span class="download-platform">Windows</span>
             <span class="download-target">x86_64 / MSVC</span>
@@ -268,17 +270,17 @@
           </div>
           <a
             class="checksum-link"
-            href="https://github.com/kmizu/aster-lang/releases/download/v0.1.0/SHA256SUMS"
+            href="https://github.com/kmizu/aster-lang/releases/download/v0.2.0/SHA256SUMS"
           >
             Download SHA256SUMS <span aria-hidden="true">↓</span>
           </a>
         </div>
 
         <div class="release-meta reveal" data-reveal>
-          <span>Version <strong>0.1.0</strong></span>
+          <span>Version <strong>0.2.0</strong></span>
           <span>Toolchain <strong>Rust 1.96</strong></span>
           <span>License <strong>Apache-2.0</strong></span>
-          <span>Drivers <strong>Fixtures only</strong></span>
+          <span>Boundary <strong>Host protocol v1</strong></span>
         </div>
       </section>
 
@@ -289,12 +291,13 @@
         </div>
         <div class="scope-columns">
           <div class="scope-column reveal" data-reveal>
-            <h3>Implemented in 0.1</h3>
+            <h3>Implemented through 0.2</h3>
             <ul>
               <li>Typed candidates, proposals, permits, and reconciliation</li>
               <li>Capabilities, budgets, pure policies, and human approval</li>
               <li>Transactional state, hash-chained traces, and snapshots</li>
               <li>Deterministic record, resume, and driver-free replay</li>
+              <li>Bounded two-phase external-host execution protocol</li>
             </ul>
           </div>
           <div class="scope-column scope-excluded reveal" data-reveal>
@@ -315,16 +318,16 @@
           <h2 id="docs-title">The documentation<br>is the system of record.</h2>
         </div>
         <div class="docs-links">
-          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.1.0/docs/spec/aster-0.1.md">
-            <span>01</span><strong>Normative specification</strong><i aria-hidden="true">↗</i>
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/docs/spec/aster-host-protocol-0.2.md">
+            <span>01</span><strong>Host protocol specification</strong><i aria-hidden="true">↗</i>
           </a>
-          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.1.0/ARCHITECTURE.md">
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/ARCHITECTURE.md">
             <span>02</span><strong>Architecture</strong><i aria-hidden="true">↗</i>
           </a>
-          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.1.0/docs/design-docs/security-model.md">
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/docs/design-docs/security-model.md">
             <span>03</span><strong>Security model</strong><i aria-hidden="true">↗</i>
           </a>
-          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/releases/tag/v0.1.0">
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/releases/tag/v0.2.0">
             <span>04</span><strong>Release notes</strong><i aria-hidden="true">↗</i>
           </a>
         </div>
@@ -336,7 +339,7 @@
       <p>Deterministic authority for governed agents.</p>
       <div>
         <a href="https://github.com/kmizu/aster-lang">Source</a>
-        <a href="https://github.com/kmizu/aster-lang/blob/v0.1.0/LICENSE">Apache-2.0</a>
+        <a href="https://github.com/kmizu/aster-lang/blob/v0.2.0/LICENSE">Apache-2.0</a>
       </div>
     </footer>
   </body>

@@ -34,7 +34,7 @@ The step-by-step implementation plan is
 - [x] Register stable diagnostics and prove payload redaction.
 - [x] Add the governed-note self-use example and end-to-end host proof.
 - [x] Make the protocol and its trust boundary normative in documentation.
-- [ ] Bump v0.2.0 and generalize four-platform release automation and site.
+- [x] Bump v0.2.0 and generalize four-platform release automation and site.
 - [ ] Pass full validation, merge, tag, publish, and externally audit v0.2.0.
 
 ## Progress
@@ -84,6 +84,14 @@ The step-by-step implementation plan is
   core-belief, example, and README documentation. The docs checker now rejects
   a missing required protocol term; its regression test, the repository docs
   check, architecture check, and governed-note source check all passed.
+- 2026-08-06: Bumped every workspace package and lockfile entry to `0.2.0`,
+  added curated v0.2.0 release notes, and updated README and Pages copy with
+  the host boundary, self-use evidence, four native archives, and checksums.
+  Release archive names, the Windows member check, and release-notes path now
+  derive from the workspace version instead of matrix literals. The release
+  checker derives the same version and rejects a synthetic Cargo 0.2.1 versus
+  notes/site 0.2.0 drift. Release/site test suites, release/site repository
+  checks, YAML parsing, `aster 0.2.0`, and governed-note checking passed.
 
 ## Surprises & Discoveries
 
@@ -115,6 +123,10 @@ The step-by-step implementation plan is
   hashes the admitted snapshot, then the CLI atomically writes every snapshot
   and the current trace before putting `execute_grant` on stdout. Documenting
   only the in-memory transition would overstate crash safety.
+- The v0.1 release workflow encoded a version three times per matrix row and
+  again in publish checks. Removing the matrix `bundle`/`asset` fields and
+  deriving all four names from Cargo leaves the site and notes as deliberate
+  public-copy assertions while eliminating workflow drift.
 
 ## Decision Log
 
@@ -155,6 +167,9 @@ The step-by-step implementation plan is
 - Treat the wire contract as a separate versioned normative specification.
   The ASTER 0.1 language spec links to it but does not claim a source-language
   version change.
+- Keep recovery dispatch explicit but without a stale default tag. Exact-tag
+  checkout and Cargo/tag equality still prevent a recovery run from publishing
+  a branch or mismatched version.
 
 ## Outcomes & Retrospective
 

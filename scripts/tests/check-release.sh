@@ -16,7 +16,7 @@ cat >"$fixture_root/Cargo.toml" <<'EOF'
 members = []
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 EOF
 
 cat >"$fixture_root/LICENSE" <<'EOF'
@@ -27,25 +27,25 @@ EOF
 cat >"$fixture_root/README.md" <<'EOF'
 # ASTER
 
-Release v0.1.0 uses SHA256SUMS.
+Release v0.2.0 uses SHA256SUMS.
 EOF
 
-cat >"$fixture_root/docs/releases/v0.1.0.md" <<'EOF'
-# ASTER v0.1.0
+cat >"$fixture_root/docs/releases/v0.2.0.md" <<'EOF'
+# ASTER v0.2.0
 
 Experimental fixture-backed reference processor.
 EOF
 
 cat >"$fixture_root/site/index.html" <<'EOF'
-<a href="aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz">Linux</a>
-<a href="aster-v0.1.0-aarch64-apple-darwin.tar.gz">macOS Apple</a>
-<a href="aster-v0.1.0-x86_64-apple-darwin.tar.gz">macOS Intel</a>
-<a href="aster-v0.1.0-x86_64-pc-windows-msvc.zip">Windows</a>
+<a href="aster-v0.2.0-x86_64-unknown-linux-musl.tar.gz">Linux</a>
+<a href="aster-v0.2.0-aarch64-apple-darwin.tar.gz">macOS Apple</a>
+<a href="aster-v0.2.0-x86_64-apple-darwin.tar.gz">macOS Intel</a>
+<a href="aster-v0.2.0-x86_64-pc-windows-msvc.zip">Windows</a>
 <a href="SHA256SUMS">SHA256SUMS</a>
 EOF
 
 cat >"$fixture_root/.github/workflows/release.yml" <<'EOF'
-name: Release v0.1.0
+name: Release
 on:
   push:
     tags: ["v*"]
@@ -64,16 +64,20 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            asset: aster-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+            binary: aster
+            format: tar.gz
           - runner: macos-15
             target: aarch64-apple-darwin
-            asset: aster-v0.1.0-aarch64-apple-darwin.tar.gz
+            binary: aster
+            format: tar.gz
           - runner: macos-15-intel
             target: x86_64-apple-darwin
-            asset: aster-v0.1.0-x86_64-apple-darwin.tar.gz
+            binary: aster
+            format: tar.gz
           - runner: windows-2025
             target: x86_64-pc-windows-msvc
-            asset: aster-v0.1.0-x86_64-pc-windows-msvc.zip
+            binary: aster.exe
+            format: zip
     steps:
       - uses: actions/checkout@v6
         with:
@@ -82,14 +86,38 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: aster.exe --version
       - run: aster.exe check examples/meeting-scheduler/main.aster
+      - run: aster.exe check examples/governed-note/main.aster
+      - id: release-metadata
+        run: |
+          version=$(awk '/^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
+          bundle="aster-v${version}-${{ matrix.target }}"
+          case "${{ matrix.format }}" in
+            tar.gz) asset="${bundle}.tar.gz" ;;
+            zip) asset="${bundle}.zip" ;;
+          esac
+          echo "bundle=$bundle" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.release-metadata.outputs.bundle }}
+          path: dist/${{ steps.release-metadata.outputs.asset }}
   publish:
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
-      - run: sha256sum --check SHA256SUMS
-      - run: gh release create "$GITHUB_REF_NAME" dist/*
+      - run: |
+          version=$(awk '/^version = / { gsub(/"/, "", $3); print $3; exit }' Cargo.toml)
+          expected=(
+            "aster-v${version}-aarch64-apple-darwin.tar.gz"
+            "aster-v${version}-x86_64-apple-darwin.tar.gz"
+            "aster-v${version}-x86_64-pc-windows-msvc.zip"
+            "aster-v${version}-x86_64-unknown-linux-musl.tar.gz"
+          )
+          windows="dist/aster-v${version}-x86_64-pc-windows-msvc.zip"
+          notes="docs/releases/v${version}.md"
+          sha256sum --check SHA256SUMS
+          gh release create "$RELEASE_TAG" dist/* --notes-file "$notes"
 EOF
 
 cat >"$fixture_root/.github/workflows/ci.yml" <<'EOF'
@@ -167,7 +195,7 @@ if [[ "$unsafe_output" != *"$unsafe_expected"* ]]; then
   exit 1
 fi
 
-sed -i 's/version = "0.1.0"/version = "0.1.1"/' "$fixture_root/Cargo.toml"
+sed -i 's/version = "0.2.0"/version = "0.2.1"/' "$fixture_root/Cargo.toml"
 
 set +e
 output=$("$checker" "$fixture_root" 2>&1)
@@ -179,7 +207,7 @@ if [[ $status -eq 0 ]]; then
   exit 1
 fi
 
-expected="release version mismatch: expected 0.1.0"
+expected="release version drift: workspace 0.2.1 requires docs/releases/v0.2.1.md"
 if [[ "$output" != *"$expected"* ]]; then
   echo "release checker did not report the version mismatch" >&2
   echo "$output" >&2

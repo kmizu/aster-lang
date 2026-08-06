@@ -2,8 +2,6 @@
 set -euo pipefail
 
 repo_root=${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)}
-expected_version="0.1.0"
-expected_tag="v${expected_version}"
 
 fail() {
   echo "$1" >&2
@@ -22,31 +20,6 @@ require_text() {
     fail "missing release contract text in $relative: $text"
 }
 
-for relative in \
-  Cargo.toml \
-  LICENSE \
-  README.md \
-  docs/releases/v0.1.0.md \
-  site/index.html \
-  .github/workflows/ci.yml \
-  .github/workflows/pages.yml \
-  .github/workflows/release.yml; do
-  require_file "$relative"
-done
-
-workflow_files=(
-  "$repo_root/.github/workflows/ci.yml"
-  "$repo_root/.github/workflows/pages.yml"
-  "$repo_root/.github/workflows/release.yml"
-)
-if rg --fixed-strings --quiet -- 'pull_request_target' "${workflow_files[@]}"; then
-  fail "forbidden release workflow trigger: pull_request_target"
-fi
-if ! rg --fixed-strings --quiet -- 'workflow_dispatch:' \
-  "$repo_root/.github/workflows/release.yml"; then
-  fail "missing release recovery contract: workflow_dispatch"
-fi
-
 workspace_version=$(
   awk '
     /^\[workspace\.package\][[:space:]]*$/ { in_workspace_package = 1; next }
@@ -62,8 +35,38 @@ workspace_version=$(
 )
 
 [[ -n "$workspace_version" ]] || fail "workspace package version is missing"
-[[ "$workspace_version" == "$expected_version" ]] ||
-  fail "release version mismatch: expected $expected_version, found $workspace_version"
+expected_tag="v${workspace_version}"
+release_notes="docs/releases/${expected_tag}.md"
+
+for relative in \
+  Cargo.toml \
+  LICENSE \
+  README.md \
+  site/index.html \
+  .github/workflows/ci.yml \
+  .github/workflows/pages.yml \
+  .github/workflows/release.yml; do
+  require_file "$relative"
+done
+
+[[ -f "$repo_root/$release_notes" ]] ||
+  fail "release version drift: workspace $workspace_version requires $release_notes"
+
+workflow_files=(
+  "$repo_root/.github/workflows/ci.yml"
+  "$repo_root/.github/workflows/pages.yml"
+  "$repo_root/.github/workflows/release.yml"
+)
+if rg --fixed-strings --quiet -- 'pull_request_target' "${workflow_files[@]}"; then
+  fail "forbidden release workflow trigger: pull_request_target"
+fi
+release_workflow="$repo_root/.github/workflows/release.yml"
+if ! rg --fixed-strings --quiet -- 'workflow_dispatch:' "$release_workflow"; then
+  fail "missing release recovery contract: workflow_dispatch"
+fi
+if rg --pcre2 --quiet -- 'aster-v[0-9]+\.[0-9]+\.[0-9]+-' "$release_workflow"; then
+  fail "release workflow hard-codes a versioned ASTER asset"
+fi
 
 assets=(
   "aster-${expected_tag}-x86_64-unknown-linux-musl.tar.gz"
@@ -74,11 +77,10 @@ assets=(
 
 for asset in "${assets[@]}"; do
   require_text site/index.html "$asset"
-  require_text .github/workflows/release.yml "$asset"
 done
 
 require_text README.md "$expected_tag"
-require_text docs/releases/v0.1.0.md "$expected_tag"
+require_text "$release_notes" "$expected_tag"
 require_text site/index.html "SHA256SUMS"
 require_text .github/workflows/release.yml "SHA256SUMS"
 require_text README.md "SHA256SUMS"
@@ -115,8 +117,21 @@ for contract in \
   'RELEASE_TAG' \
   'refs/tags/${{ env.RELEASE_TAG }}' \
   'git checkout-index --force --all' \
+  'id: release-metadata' \
+  'bundle="aster-v${version}-${{ matrix.target }}"' \
+  'asset="${bundle}.tar.gz"' \
+  'asset="${bundle}.zip"' \
+  '${{ steps.release-metadata.outputs.bundle }}' \
+  '${{ steps.release-metadata.outputs.asset }}' \
+  'aster-v${version}-aarch64-apple-darwin.tar.gz' \
+  'aster-v${version}-x86_64-apple-darwin.tar.gz' \
+  'aster-v${version}-x86_64-pc-windows-msvc.zip' \
+  'aster-v${version}-x86_64-unknown-linux-musl.tar.gz' \
+  'windows="dist/aster-v${version}-x86_64-pc-windows-msvc.zip"' \
+  'notes="docs/releases/v${version}.md"' \
   'aster.exe --version' \
   'aster.exe check examples/meeting-scheduler/main.aster' \
+  'aster.exe check examples/governed-note/main.aster' \
   'sha256sum --check SHA256SUMS' \
   'gh release create'; do
   require_text .github/workflows/release.yml "$contract"

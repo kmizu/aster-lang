@@ -26,17 +26,24 @@ It intentionally excludes live provider integrations, arbitrary network or
 shell access, FFI, packages/imports, concurrency, loops, recursion,
 self-modification, distributed execution, and production key management.
 
-## ASTER v0.1.0
+## ASTER v0.2.0
 
-The first release is available from the
+The current experimental release is available from the
 [ASTER project site](https://kmizu.github.io/aster-lang/) and the
-[GitHub Release](https://github.com/kmizu/aster-lang/releases/tag/v0.1.0).
-It provides command-line archives for Linux x86_64, macOS Apple Silicon,
-macOS Intel, and Windows x86_64. See the
-[v0.1.0 release notes](docs/releases/v0.1.0.md) for the implemented scope and
-limitations.
+[GitHub Release](https://github.com/kmizu/aster-lang/releases/tag/v0.2.0).
+It adds the governed external-host protocol and provides these native command-
+line archives:
 
-Download `SHA256SUMS` with the archives and verify them before extraction:
+- [Linux x86_64 musl](https://github.com/kmizu/aster-lang/releases/download/v0.2.0/aster-v0.2.0-x86_64-unknown-linux-musl.tar.gz)
+- [macOS Apple Silicon](https://github.com/kmizu/aster-lang/releases/download/v0.2.0/aster-v0.2.0-aarch64-apple-darwin.tar.gz)
+- [macOS Intel](https://github.com/kmizu/aster-lang/releases/download/v0.2.0/aster-v0.2.0-x86_64-apple-darwin.tar.gz)
+- [Windows x86_64](https://github.com/kmizu/aster-lang/releases/download/v0.2.0/aster-v0.2.0-x86_64-pc-windows-msvc.zip)
+
+See the [v0.2.0 release notes](docs/releases/v0.2.0.md) for the implemented
+scope, self-use evidence, trust boundary, and limitations.
+
+Download [`SHA256SUMS`](https://github.com/kmizu/aster-lang/releases/download/v0.2.0/SHA256SUMS)
+with the archives and verify them before extraction:
 
 ```bash
 sha256sum --check SHA256SUMS
