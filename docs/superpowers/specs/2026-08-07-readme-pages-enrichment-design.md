@@ -1,7 +1,7 @@
 # ASTER README and GitHub Pages Enrichment Design
 
-**Date:** 2026-08-07  
-**Status:** Approved direction; implementation pending  
+**Date:** 2026-08-07
+**Status:** Approved direction; implementation pending
 **Audience:** AI-agent developers first, language/runtime implementers second
 
 ## Context
