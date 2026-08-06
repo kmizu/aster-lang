@@ -7,6 +7,7 @@ mod budget;
 mod canonical;
 mod capability;
 mod fixture;
+mod host;
 mod machine;
 mod run;
 mod trace;
@@ -18,6 +19,12 @@ pub use canonical::{CanonicalError, canonical_json, canonical_sha256};
 pub use capability::{CapabilityError, CapabilityGrant, CapabilityGrants};
 pub use fixture::{
     DriverError, EffectDriver, FixtureDriver, FixtureEntry, FixturePreview, FixtureSet,
+};
+pub use host::{
+    EffectAdmission, EffectPreview, ExecutionGrant, HOST_PROTOCOL_MAX_LINE_BYTES,
+    HOST_PROTOCOL_NAME, HOST_PROTOCOL_VERSION, Hello, HelloAck, HostCompleted,
+    HostEffectResolution, HostFailed, HostInboundFrame, HostInboundMessage, HostOutboundFrame,
+    HostOutboundMessage, HostProtocolError, decode_host_reply,
 };
 pub use machine::{
     AuditEvent, EffectKind, EffectRequest, EffectResolution, Machine, MachineError,

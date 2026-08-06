@@ -28,7 +28,7 @@ The step-by-step implementation plan is
 ## Milestones
 
 - [x] Extract a pure, resumable runtime `RecordSession`.
-- [ ] Define canonical host frames and grant binding.
+- [x] Define canonical host frames and grant binding.
 - [ ] Implement the transport-independent `HostSession` state machine.
 - [ ] Add bounded JSONL CLI transport, persistence, and crash resume.
 - [ ] Register stable diagnostics and prove payload redaction.
@@ -49,6 +49,11 @@ The step-by-step implementation plan is
   driver adapter. The final Task 1 gate passed 40 integration tests
   (9 governance, 19 machine, 12 record/replay), runtime clippy with warnings
   denied, and `git diff --check`.
+- 2026-08-06: Added exact host envelopes and payloads, strict raw-payload
+  decoding, duplicate/unknown usage rejection, all six safe protocol error
+  classes, and an execution-grant hash bound to protocol/run/request/trace/
+  snapshot/maximums. Focused host tests, full runtime tests, and strict runtime
+  clippy passed before the Task 2 commit.
 
 ## Surprises & Discoveries
 
@@ -60,6 +65,10 @@ The step-by-step implementation plan is
   machine rejected its request hash. A red regression now proves hash
   substitution is rejected at the session boundary before `effect_resolved`
   or its payload can enter the trace.
+- Deserializing an envelope payload through `serde_json::Value` erased
+  duplicate usage keys before the strict payload type could inspect them.
+  Keeping the payload as `RawValue` until kind-specific decoding preserves the
+  original map structure without retaining it in any public error.
 
 ## Decision Log
 
@@ -72,6 +81,12 @@ The step-by-step implementation plan is
 - Represent `AwaitingResolution` as `Box<AdmittedEffect>` and borrow
   `EffectResolution` in `resolve`. This avoids copying or inflating the sealed
   snapshot while preserving the phase and ownership contract.
+- Enable only serde_json's existing `raw_value` feature. This adds no new
+  library or I/O capability and is required to reject duplicate nested usage
+  dimensions before a lossy JSON object representation can collapse them.
+- Classify the private usage-deserializer marker only when it begins an error,
+  so an attacker-controlled unknown field containing the marker cannot alter
+  the public diagnostic class.
 
 ## Outcomes & Retrospective
 
