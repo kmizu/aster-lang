@@ -2,9 +2,11 @@ use std::collections::BTreeMap;
 
 use aster_ir::lower;
 use aster_runtime::{
-    CapabilityGrant, CapabilityGrants, EffectKind, ExecutionGrant, Hello, HostEffectResolution,
-    HostOutboundFrame, HostOutboundMessage, HostProtocolError, RecordProgress, RecordSession,
-    StartRequest, decode_host_reply,
+    CapabilityGrant, CapabilityGrants, EffectAdmission, EffectDriver, EffectKind, ExecutionGrant,
+    FixtureDriver, FixtureEntry, FixturePreview, FixtureSet, Hello, HelloAck, HostEffectResolution,
+    HostInboundFrame, HostInboundMessage, HostOutboundFrame, HostOutboundMessage,
+    HostProtocolError, HostSession, RecordProgress, RecordSession, StartRequest, canonical_json,
+    decode_host_reply, replay_run,
 };
 use aster_semantics::check_source;
 use aster_syntax::SourceFile;
@@ -66,6 +68,90 @@ fn admitted_model() -> (String, aster_runtime::AdmittedEffect) {
         )
         .expect("model effect is admitted");
     (session.trace().run_id.clone(), admitted)
+}
+
+fn entry(
+    kind: EffectKind,
+    identity: &str,
+    match_request: serde_json::Value,
+    response: serde_json::Value,
+) -> FixtureEntry {
+    FixtureEntry {
+        kind,
+        identity: identity.to_owned(),
+        match_request,
+        response,
+        max_usage: BTreeMap::new(),
+        actual_usage: BTreeMap::new(),
+    }
+}
+
+fn fixture_driver() -> FixtureDriver {
+    let mut model = entry(
+        EffectKind::Model,
+        "ParseMeeting",
+        json!({"model_alias": "planner"}),
+        json!({
+            "title": "Planning",
+            "attendees": ["new.person@example.test"],
+            "duration_minutes": 30
+        }),
+    );
+    model.max_usage.insert("model_tokens".to_owned(), 100);
+    model.actual_usage.insert("model_tokens".to_owned(), 20);
+    FixtureDriver::new(FixtureSet {
+        schema_version: 1,
+        entries: vec![
+            model,
+            entry(
+                EffectKind::Read,
+                "Calendar.free",
+                json!({"arguments": {"owner": "user-001", "duration_minutes": 30}}),
+                json!([{"id": "slot-001"}]),
+            ),
+            entry(
+                EffectKind::Approval,
+                "CalendarPolicy",
+                json!({"principal": "user-001"}),
+                json!({"approved": true}),
+            ),
+            entry(
+                EffectKind::Write,
+                "Calendar.create",
+                json!({"arguments": {"request_id": "evt-001"}}),
+                json!({"id": "event-001"}),
+            ),
+            entry(
+                EffectKind::Read,
+                "Calendar.lookup",
+                json!({"arguments": {"event_id": "event-001"}}),
+                json!({"id": "event-001"}),
+            ),
+        ],
+    })
+    .expect("fixtures are valid")
+}
+
+fn reply_to(frame: &HostOutboundFrame, message: HostInboundMessage) -> HostInboundFrame {
+    HostInboundFrame::new(frame.session_id.clone(), frame.message_id, message)
+}
+
+fn acknowledge(frame: &HostOutboundFrame) -> HostInboundFrame {
+    reply_to(frame, HostInboundMessage::HelloAck(HelloAck::current()))
+}
+
+fn admitted(
+    frame: &HostOutboundFrame,
+    request_hash: &str,
+    maximums: BTreeMap<String, u64>,
+) -> HostInboundFrame {
+    reply_to(
+        frame,
+        HostInboundMessage::EffectAdmission(EffectAdmission {
+            request_hash: request_hash.to_owned(),
+            max_usage: maximums,
+        }),
+    )
 }
 
 #[test]
@@ -191,4 +277,299 @@ fn actual_usage_must_match_and_fit_the_grant() {
         .expect("bounded exact dimensions validate");
     assert_eq!(exact.into_runtime().actual_usage["model_tokens"], 100);
     assert_eq!(admitted.request.kind, EffectKind::Model);
+}
+
+#[test]
+fn host_session_handshake_precedes_two_phase_effect_execution() {
+    let mut host =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = host.outbound().expect("hello is outstanding");
+    assert!(matches!(hello.message, HostOutboundMessage::Hello(_)));
+    assert!(host.snapshots().is_empty());
+
+    let preview = host
+        .reply(acknowledge(&hello))
+        .expect("acknowledgement advances");
+    let request = match &preview.message {
+        HostOutboundMessage::EffectPreview(preview) => preview.request.clone(),
+        other => panic!("expected preview, got {other:?}"),
+    };
+    assert!(host.snapshots().is_empty());
+
+    let grant = host
+        .reply(admitted(
+            &preview,
+            &request.request_hash,
+            BTreeMap::from([("model_tokens".to_owned(), 100)]),
+        ))
+        .expect("admission advances");
+    assert!(matches!(
+        grant.message,
+        HostOutboundMessage::ExecuteGrant(_)
+    ));
+    assert_eq!(host.snapshots().len(), 1);
+}
+
+#[test]
+fn host_session_rejects_cross_session_and_stale_replies() {
+    let mut cross_session =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = cross_session.outbound().expect("hello");
+    let mut wrong_session = acknowledge(&hello);
+    wrong_session.session_id = "different-run".to_owned();
+    assert!(matches!(
+        cross_session.reply(wrong_session),
+        Err(HostProtocolError::BindingMismatch)
+    ));
+    assert!(matches!(
+        cross_session.outbound().expect("failed frame").message,
+        HostOutboundMessage::Failed(_)
+    ));
+    assert_eq!(
+        cross_session
+            .trace()
+            .entries
+            .last()
+            .map(|entry| entry.kind.as_str()),
+        Some("run_failed")
+    );
+
+    let mut stale =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = stale.outbound().expect("hello");
+    stale
+        .reply(acknowledge(&hello))
+        .expect("first acknowledgement advances");
+    assert!(matches!(
+        stale.reply(acknowledge(&hello)),
+        Err(HostProtocolError::OutOfSequence)
+    ));
+}
+
+#[test]
+fn host_session_rejects_resolution_before_grant_and_hash_substitution() {
+    let mut early =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = early.outbound().expect("hello");
+    let preview = early.reply(acknowledge(&hello)).expect("preview");
+    assert!(matches!(
+        early.reply(reply_to(
+            &preview,
+            HostInboundMessage::EffectResolution(HostEffectResolution {
+                request_hash: "request".to_owned(),
+                execution_grant_hash: "grant".to_owned(),
+                payload: json!({}),
+                actual_usage: BTreeMap::new(),
+            }),
+        )),
+        Err(HostProtocolError::OutOfSequence)
+    ));
+
+    let mut substituted =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = substituted.outbound().expect("hello");
+    let preview = substituted.reply(acknowledge(&hello)).expect("preview");
+    assert!(matches!(
+        substituted.reply(admitted(&preview, "substituted-request", BTreeMap::new())),
+        Err(HostProtocolError::BindingMismatch)
+    ));
+}
+
+#[test]
+fn host_session_rejects_usage_overflow_and_unexpected_eof() {
+    let mut overflow =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = overflow.outbound().expect("hello");
+    let preview = overflow.reply(acknowledge(&hello)).expect("preview");
+    let request_hash = match &preview.message {
+        HostOutboundMessage::EffectPreview(preview) => preview.request.request_hash.clone(),
+        other => panic!("expected preview, got {other:?}"),
+    };
+    assert!(matches!(
+        overflow.reply(admitted(
+            &preview,
+            &request_hash,
+            BTreeMap::from([("model_tokens".to_owned(), u64::MAX)]),
+        )),
+        Err(HostProtocolError::InvalidUsage)
+    ));
+
+    let mut eof =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    assert!(matches!(
+        eof.end_of_input(),
+        Err(HostProtocolError::UnexpectedEof)
+    ));
+    assert!(matches!(
+        eof.outbound().expect("failed frame").message,
+        HostOutboundMessage::Failed(_)
+    ));
+}
+
+#[test]
+fn host_session_restore_reemits_the_same_grant_without_readmission() {
+    let program = meeting_program();
+    let mut record =
+        RecordSession::start(program.clone(), start_request()).expect("record session starts");
+    let request = match record.progress().expect("record progresses") {
+        RecordProgress::AwaitingAdmission(request) => request,
+        other => panic!("expected admission, got {other:?}"),
+    };
+    let admitted = record
+        .admit(
+            &request.request_hash,
+            BTreeMap::from([("model_tokens".to_owned(), 100)]),
+        )
+        .expect("effect is admitted");
+    let expected = ExecutionGrant::for_admitted(&record.trace().run_id, &admitted)
+        .expect("original grant hashes");
+
+    let mut restored =
+        HostSession::restore(program, admitted.snapshot.clone(), record.trace().clone())
+            .expect("host session restores");
+    let hello = restored.outbound().expect("fresh hello");
+    let grant = restored
+        .reply(acknowledge(&hello))
+        .expect("grant follows handshake");
+
+    assert_eq!(grant.message, HostOutboundMessage::ExecuteGrant(expected));
+    assert_eq!(restored.snapshots(), &[admitted.snapshot]);
+}
+
+#[test]
+fn host_session_rejects_grant_substitution_and_actual_usage_overflow() {
+    let mut substituted =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = substituted.outbound().expect("hello");
+    let preview = substituted.reply(acknowledge(&hello)).expect("preview");
+    let request_hash = match &preview.message {
+        HostOutboundMessage::EffectPreview(preview) => preview.request.request_hash.clone(),
+        other => panic!("expected preview, got {other:?}"),
+    };
+    let grant_frame = substituted
+        .reply(admitted(
+            &preview,
+            &request_hash,
+            BTreeMap::from([("model_tokens".to_owned(), 100)]),
+        ))
+        .expect("grant");
+    let grant = match &grant_frame.message {
+        HostOutboundMessage::ExecuteGrant(grant) => grant.clone(),
+        other => panic!("expected grant, got {other:?}"),
+    };
+    assert!(matches!(
+        substituted.reply(reply_to(
+            &grant_frame,
+            HostInboundMessage::EffectResolution(HostEffectResolution {
+                request_hash: grant.request.request_hash,
+                execution_grant_hash: "substituted-grant".to_owned(),
+                payload: json!({}),
+                actual_usage: BTreeMap::from([("model_tokens".to_owned(), 20)]),
+            }),
+        )),
+        Err(HostProtocolError::BindingMismatch)
+    ));
+
+    let mut overflow =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = overflow.outbound().expect("hello");
+    let preview = overflow.reply(acknowledge(&hello)).expect("preview");
+    let request_hash = match &preview.message {
+        HostOutboundMessage::EffectPreview(preview) => preview.request.request_hash.clone(),
+        other => panic!("expected preview, got {other:?}"),
+    };
+    let grant_frame = overflow
+        .reply(admitted(
+            &preview,
+            &request_hash,
+            BTreeMap::from([("model_tokens".to_owned(), 100)]),
+        ))
+        .expect("grant");
+    let grant = match &grant_frame.message {
+        HostOutboundMessage::ExecuteGrant(grant) => grant.clone(),
+        other => panic!("expected grant, got {other:?}"),
+    };
+    assert!(matches!(
+        overflow.reply(reply_to(
+            &grant_frame,
+            HostInboundMessage::EffectResolution(HostEffectResolution {
+                request_hash: grant.request.request_hash,
+                execution_grant_hash: grant.execution_grant_hash,
+                payload: json!({}),
+                actual_usage: BTreeMap::from([("model_tokens".to_owned(), 101)]),
+            }),
+        )),
+        Err(HostProtocolError::InvalidUsage)
+    ));
+}
+
+#[test]
+fn host_session_drives_all_effects_then_replays_without_host_interaction() {
+    let program = meeting_program();
+    let start = start_request();
+    let mut host = HostSession::start(program.clone(), start.clone()).expect("host session starts");
+    let mut driver = fixture_driver();
+    let mut preview: Option<FixturePreview> = None;
+    let mut effect_kinds = Vec::new();
+
+    let hello = host.outbound().expect("hello");
+    let mut outbound = host
+        .reply(acknowledge(&hello))
+        .expect("preview follows hello");
+    loop {
+        outbound = match &outbound.message {
+            HostOutboundMessage::EffectPreview(effect) => {
+                effect_kinds.push(effect.request.kind);
+                let next_preview = driver.preview(&effect.request).expect("fixture previews");
+                let reply = admitted(
+                    &outbound,
+                    &effect.request.request_hash,
+                    next_preview.max_usage.clone(),
+                );
+                preview = Some(next_preview);
+                host.reply(reply).expect("grant follows admission")
+            }
+            HostOutboundMessage::ExecuteGrant(grant) => {
+                let next_preview = preview.take().expect("preview precedes grant");
+                let resolution = driver
+                    .resolve(&grant.request, &next_preview)
+                    .expect("fixture resolves");
+                host.reply(reply_to(
+                    &outbound,
+                    HostInboundMessage::EffectResolution(HostEffectResolution {
+                        request_hash: resolution.request_hash,
+                        execution_grant_hash: grant.execution_grant_hash.clone(),
+                        payload: resolution.payload,
+                        actual_usage: resolution.actual_usage,
+                    }),
+                ))
+                .expect("resolution advances")
+            }
+            HostOutboundMessage::Completed(_) => break,
+            other => panic!("unexpected host message {other:?}"),
+        };
+    }
+
+    assert_eq!(
+        effect_kinds,
+        vec![
+            EffectKind::Model,
+            EffectKind::Read,
+            EffectKind::Approval,
+            EffectKind::Write,
+            EffectKind::Read,
+        ]
+    );
+    assert_eq!(driver.call_count(EffectKind::Model), 1);
+    assert_eq!(driver.call_count(EffectKind::Read), 2);
+    assert_eq!(driver.call_count(EffectKind::Approval), 1);
+    assert_eq!(driver.call_count(EffectKind::Write), 1);
+    let recorded = host.outcome().expect("host completed").clone();
+    let terminal = host.outbound();
+    let replayed = replay_run(program, start, host.trace()).expect("driver-free replay succeeds");
+    assert_eq!(
+        canonical_json(&recorded.state).expect("record state canonicalizes"),
+        canonical_json(&replayed.state).expect("replay state canonicalizes")
+    );
+    assert_eq!(host.outbound(), terminal);
 }

@@ -7,7 +7,11 @@ use serde::{
 use serde_json::{Value, value::RawValue};
 use thiserror::Error;
 
-use crate::{AdmittedEffect, EffectRequest, EffectResolution, canonical_sha256};
+use crate::{
+    AdmittedEffect, EffectRequest, EffectResolution, MachineError, MachineSnapshot, RecordFailure,
+    RecordProgress, RecordSession, RunError, RunOutcome, StartRequest, Trace, canonical_sha256,
+};
+use aster_ir::Program;
 
 /// Stable host protocol name used during negotiation and grant binding.
 pub const HOST_PROTOCOL_NAME: &str = "aster-host";
@@ -471,6 +475,352 @@ pub struct HostFailed {
     pub summary: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum HostOutstanding {
+    Hello(HostOutboundFrame),
+    Admission {
+        frame: HostOutboundFrame,
+        request: EffectRequest,
+    },
+    Resolution {
+        frame: HostOutboundFrame,
+        admitted: Box<AdmittedEffect>,
+        grant: ExecutionGrant,
+    },
+    Terminal(HostOutboundFrame),
+}
+
+impl HostOutstanding {
+    fn frame(&self) -> &HostOutboundFrame {
+        match self {
+            Self::Hello(frame)
+            | Self::Admission { frame, .. }
+            | Self::Resolution { frame, .. }
+            | Self::Terminal(frame) => frame,
+        }
+    }
+
+    fn is_terminal(&self) -> bool {
+        matches!(self, Self::Terminal(_))
+    }
+}
+
+/// Pure host-protocol sequencer layered over one deterministic record session.
+pub struct HostSession {
+    record: Option<RecordSession>,
+    failure: Option<RecordFailure>,
+    fallback_trace: Trace,
+    run_id: String,
+    program_hash: String,
+    next_message_id: u64,
+    outstanding: HostOutstanding,
+    outcome: Option<RunOutcome>,
+}
+
+impl HostSession {
+    /// Starts a record session with a required protocol handshake.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid runtime start data before a protocol session exists.
+    pub fn start(program: Program, start: StartRequest) -> Result<Self, HostProtocolError> {
+        let program_hash = program.program_hash.clone();
+        let record = RecordSession::start(program, start).map_err(|error| map_run_error(&error))?;
+        Ok(Self::from_record(record, program_hash))
+    }
+
+    /// Restores one admitted effect and requires a fresh handshake before the
+    /// identical execution grant is re-emitted.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid snapshot seals, program/trace/checkpoint mismatches, or
+    /// a snapshot without one admitted pending request.
+    pub fn restore(
+        program: Program,
+        snapshot: MachineSnapshot,
+        trace: Trace,
+    ) -> Result<Self, HostProtocolError> {
+        let program_hash = program.program_hash.clone();
+        let record = RecordSession::restore(program, snapshot, trace)
+            .map_err(|error| map_restore_error(&error))?;
+        Ok(Self::from_record(record, program_hash))
+    }
+
+    fn from_record(record: RecordSession, program_hash: String) -> Self {
+        let run_id = record.trace().run_id.clone();
+        let hello = HostOutboundFrame::new(
+            run_id.clone(),
+            0,
+            HostOutboundMessage::Hello(Hello::new(
+                env!("CARGO_PKG_VERSION").to_owned(),
+                program_hash.clone(),
+                run_id.clone(),
+            )),
+        );
+        Self {
+            record: Some(record),
+            failure: None,
+            fallback_trace: Trace::new(run_id.clone()),
+            run_id,
+            program_hash,
+            next_message_id: 1,
+            outstanding: HostOutstanding::Hello(hello),
+            outcome: None,
+        }
+    }
+
+    /// Returns the frame awaiting a host reply or the terminal frame.
+    #[must_use]
+    pub fn outbound(&self) -> Option<HostOutboundFrame> {
+        Some(self.outstanding.frame().clone())
+    }
+
+    /// Applies one exact reply and advances to the next outbound frame.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed envelopes, stale/duplicate/out-of-order replies,
+    /// cross-session or request/grant substitution, invalid usage, and
+    /// controlled runtime failures. Failure closes the trace and exposes a
+    /// redacted terminal frame through [`Self::outbound`].
+    pub fn reply(
+        &mut self,
+        value: HostInboundFrame,
+    ) -> Result<HostOutboundFrame, HostProtocolError> {
+        match self.reply_inner(value) {
+            Ok(frame) => Ok(frame),
+            Err(error) => {
+                self.transition_failed(&error);
+                Err(error)
+            }
+        }
+    }
+
+    fn reply_inner(
+        &mut self,
+        value: HostInboundFrame,
+    ) -> Result<HostOutboundFrame, HostProtocolError> {
+        if value.schema_version != HOST_PROTOCOL_VERSION {
+            return Err(HostProtocolError::MalformedFrame);
+        }
+        let expected = self.outstanding.clone();
+        let expected_frame = expected.frame();
+        if value.session_id != self.run_id {
+            return Err(HostProtocolError::BindingMismatch);
+        }
+        if value.in_reply_to != expected_frame.message_id {
+            return Err(HostProtocolError::OutOfSequence);
+        }
+        match (expected, value.message) {
+            (HostOutstanding::Hello(_), HostInboundMessage::HelloAck(ack)) => {
+                if !ack.is_current() {
+                    return Err(HostProtocolError::MalformedFrame);
+                }
+                self.advance_record()
+            }
+            (
+                HostOutstanding::Admission { request, .. },
+                HostInboundMessage::EffectAdmission(admission),
+            ) => {
+                admission.validate()?;
+                if admission.request_hash != request.request_hash {
+                    return Err(HostProtocolError::BindingMismatch);
+                }
+                let admitted = self
+                    .active_record_mut()?
+                    .admit(&request.request_hash, admission.max_usage)
+                    .map_err(|error| map_run_error(&error))?;
+                self.emit_grant(admitted)
+            }
+            (
+                HostOutstanding::Resolution {
+                    admitted, grant, ..
+                },
+                HostInboundMessage::EffectResolution(resolution),
+            ) => {
+                resolution.validate_against(&self.run_id, &admitted, &grant)?;
+                let runtime_resolution = resolution.into_runtime();
+                self.active_record_mut()?
+                    .resolve(&runtime_resolution)
+                    .map_err(|error| map_run_error(&error))?;
+                self.advance_record()
+            }
+            _ => Err(HostProtocolError::OutOfSequence),
+        }
+    }
+
+    fn active_record_mut(&mut self) -> Result<&mut RecordSession, HostProtocolError> {
+        self.record.as_mut().ok_or(HostProtocolError::OutOfSequence)
+    }
+
+    fn advance_record(&mut self) -> Result<HostOutboundFrame, HostProtocolError> {
+        let progress = self
+            .active_record_mut()?
+            .progress()
+            .map_err(|error| map_run_error(&error))?;
+        match progress {
+            RecordProgress::AwaitingAdmission(request) => {
+                let frame = self.next_frame(HostOutboundMessage::EffectPreview(EffectPreview {
+                    request: request.clone(),
+                }))?;
+                self.outstanding = HostOutstanding::Admission {
+                    frame: frame.clone(),
+                    request,
+                };
+                Ok(frame)
+            }
+            RecordProgress::AwaitingResolution(admitted) => self.emit_grant(*admitted),
+            RecordProgress::Completed(outcome) => {
+                let final_state_hash = canonical_sha256(&outcome.state)
+                    .map_err(|_| HostProtocolError::RuntimeFailure)?;
+                let trace_hash = self
+                    .trace()
+                    .entries
+                    .last()
+                    .map_or_else(String::new, |entry| entry.entry_hash.clone());
+                let frame = self.next_frame(HostOutboundMessage::Completed(HostCompleted {
+                    final_state_hash,
+                    trace_hash,
+                }))?;
+                self.outcome = Some(outcome);
+                self.outstanding = HostOutstanding::Terminal(frame.clone());
+                Ok(frame)
+            }
+        }
+    }
+
+    fn emit_grant(
+        &mut self,
+        admitted: AdmittedEffect,
+    ) -> Result<HostOutboundFrame, HostProtocolError> {
+        let grant = ExecutionGrant::for_admitted(&self.run_id, &admitted)?;
+        let frame = self.next_frame(HostOutboundMessage::ExecuteGrant(grant.clone()))?;
+        self.outstanding = HostOutstanding::Resolution {
+            frame: frame.clone(),
+            admitted: Box::new(admitted),
+            grant,
+        };
+        Ok(frame)
+    }
+
+    fn next_frame(
+        &mut self,
+        message: HostOutboundMessage,
+    ) -> Result<HostOutboundFrame, HostProtocolError> {
+        let message_id = self.next_message_id;
+        self.next_message_id = self
+            .next_message_id
+            .checked_add(1)
+            .ok_or(HostProtocolError::RuntimeFailure)?;
+        Ok(HostOutboundFrame::new(
+            self.run_id.clone(),
+            message_id,
+            message,
+        ))
+    }
+
+    fn transition_failed(&mut self, error: &HostProtocolError) {
+        if self.outstanding.is_terminal() {
+            return;
+        }
+        if let Some(record) = self.record.take() {
+            self.failure = Some(record.fail(RunError::Data(error.to_string())));
+        }
+        let frame = HostOutboundFrame::new(
+            self.run_id.clone(),
+            self.next_message_id,
+            HostOutboundMessage::Failed(HostFailed {
+                code: error.diagnostic_code().to_owned(),
+                summary: error.to_string(),
+            }),
+        );
+        self.next_message_id = self.next_message_id.saturating_add(1);
+        self.outstanding = HostOutstanding::Terminal(frame);
+    }
+
+    /// Signals transport EOF. EOF is valid only after a terminal frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ASTER-HOST-11005` while a reply is required and closes the
+    /// session with redacted failure evidence.
+    pub fn end_of_input(&mut self) -> Result<(), HostProtocolError> {
+        if self.outstanding.is_terminal() {
+            return Ok(());
+        }
+        let error = HostProtocolError::UnexpectedEof;
+        self.transition_failed(&error);
+        Err(error)
+    }
+
+    /// Returns the active or controlled-failure trace.
+    #[must_use]
+    pub fn trace(&self) -> &Trace {
+        if let Some(failure) = &self.failure {
+            &failure.trace
+        } else if let Some(record) = &self.record {
+            record.trace()
+        } else {
+            &self.fallback_trace
+        }
+    }
+
+    /// Returns snapshots sealed before every emitted execution grant.
+    #[must_use]
+    pub fn snapshots(&self) -> &[MachineSnapshot] {
+        if let Some(failure) = &self.failure {
+            &failure.snapshots
+        } else if let Some(record) = &self.record {
+            record.snapshots()
+        } else {
+            &[]
+        }
+    }
+
+    /// Returns the committed outcome only after a completed terminal frame.
+    #[must_use]
+    pub fn outcome(&self) -> Option<&RunOutcome> {
+        self.outcome.as_ref()
+    }
+
+    /// Returns the exact program fingerprint announced by the handshake.
+    #[must_use]
+    pub fn program_hash(&self) -> &str {
+        &self.program_hash
+    }
+}
+
+fn map_restore_error(error: &RunError) -> HostProtocolError {
+    match error {
+        RunError::Trace(_)
+        | RunError::Machine(
+            MachineError::ProgramMismatch
+            | MachineError::SnapshotSchemaMismatch
+            | MachineError::RuntimeVersionMismatch
+            | MachineError::SnapshotHashMismatch,
+        ) => HostProtocolError::BindingMismatch,
+        _ => map_run_error(error),
+    }
+}
+
+fn map_run_error(error: &RunError) -> HostProtocolError {
+    match error {
+        RunError::SessionPhase | RunError::Machine(MachineError::ResolutionMismatch) => {
+            HostProtocolError::BindingMismatch
+        }
+        RunError::Machine(
+            MachineError::UnexpectedUsageDimension
+            | MachineError::UsageAlreadyReserved
+            | MachineError::Budget(_),
+        ) => HostProtocolError::InvalidUsage,
+        RunError::Machine(MachineError::TypeMismatch(_)) => HostProtocolError::MalformedFrame,
+        RunError::Machine(_) | RunError::Driver(_) | RunError::Trace(_) | RunError::Data(_) => {
+            HostProtocolError::RuntimeFailure
+        }
+    }
+}
+
 /// Decodes and validates one complete host reply without retaining its input.
 ///
 /// # Errors
@@ -522,6 +872,9 @@ pub enum HostProtocolError {
     /// ASTER-HOST-11006.
     #[error("host protocol frame could not be written")]
     WriteFailure,
+    /// Existing non-protocol typed runtime failure.
+    #[error("typed runtime failure")]
+    RuntimeFailure,
 }
 
 impl HostProtocolError {
@@ -535,6 +888,7 @@ impl HostProtocolError {
             Self::InvalidUsage => "ASTER-HOST-11004",
             Self::UnexpectedEof => "ASTER-HOST-11005",
             Self::WriteFailure => "ASTER-HOST-11006",
+            Self::RuntimeFailure => "ASTER-RUNTIME-9001",
         }
     }
 }

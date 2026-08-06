@@ -24,7 +24,7 @@ pub use host::{
     EffectAdmission, EffectPreview, ExecutionGrant, HOST_PROTOCOL_MAX_LINE_BYTES,
     HOST_PROTOCOL_NAME, HOST_PROTOCOL_VERSION, Hello, HelloAck, HostCompleted,
     HostEffectResolution, HostFailed, HostInboundFrame, HostInboundMessage, HostOutboundFrame,
-    HostOutboundMessage, HostProtocolError, decode_host_reply,
+    HostOutboundMessage, HostProtocolError, HostSession, decode_host_reply,
 };
 pub use machine::{
     AuditEvent, EffectKind, EffectRequest, EffectResolution, Machine, MachineError,

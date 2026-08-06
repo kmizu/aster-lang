@@ -29,7 +29,7 @@ The step-by-step implementation plan is
 
 - [x] Extract a pure, resumable runtime `RecordSession`.
 - [x] Define canonical host frames and grant binding.
-- [ ] Implement the transport-independent `HostSession` state machine.
+- [x] Implement the transport-independent `HostSession` state machine.
 - [ ] Add bounded JSONL CLI transport, persistence, and crash resume.
 - [ ] Register stable diagnostics and prove payload redaction.
 - [ ] Add the governed-note self-use example and end-to-end host proof.
@@ -54,6 +54,13 @@ The step-by-step implementation plan is
   classes, and an execution-grant hash bound to protocol/run/request/trace/
   snapshot/maximums. Focused host tests, full runtime tests, and strict runtime
   clippy passed before the Task 2 commit.
+- 2026-08-06: Added the pure `HostSession` handshake and exact outstanding
+  reply phases, redacted terminal failures, EOF handling, resume-to-identical-
+  grant behavior, and accessors for trace/snapshots/outcome. A fixture-backed
+  host test drove model/read/approval/write/read and then reproduced the state
+  through `replay_run` with no host interaction. The Task 3 gate passed 55
+  integration tests (9 governance, 15 host, 19 machine, 12 record/replay) and
+  strict runtime clippy.
 
 ## Surprises & Discoveries
 
@@ -69,6 +76,10 @@ The step-by-step implementation plan is
   duplicate usage keys before the strict payload type could inspect them.
   Keeping the payload as `RawValue` until kind-specific decoding preserves the
   original map structure without retaining it in any public error.
+- A protocol error must both be returned to the transport and leave durable
+  terminal evidence. `HostSession` therefore closes the active
+  `RecordSession` into a `RecordFailure`, exposes the redacted `failed` frame,
+  and retains the resulting trace/snapshots after returning the typed error.
 
 ## Decision Log
 
@@ -87,6 +98,14 @@ The step-by-step implementation plan is
 - Classify the private usage-deserializer marker only when it begins an error,
   so an attacker-controlled unknown field containing the marker cannot alter
   the public diagnostic class.
+- Keep the six host-boundary diagnostic classes distinct from an existing
+  typed runtime failure. `HostProtocolError::RuntimeFailure` maps only to
+  `ASTER-RUNTIME-9001`; it is used when session setup or deterministic VM/
+  trace internals fail rather than mislabeling those failures as malformed
+  host frames.
+- A resumed `HostSession` always performs a fresh hello exchange, then emits
+  the identical grant reconstructed from the sealed snapshot. It never emits
+  a preview or accepts a second admission for that pending effect.
 
 ## Outcomes & Retrospective
 
