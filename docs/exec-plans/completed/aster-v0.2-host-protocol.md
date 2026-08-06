@@ -116,6 +116,27 @@ The step-by-step implementation plan is
   `5261cd1` and opened ready PR #3 against `main`. Both the push CI run
   `31105595264` and pull-request CI run `31105610743` completed successfully;
   each ran the repository `./scripts/check.sh` job on the exact head commit.
+- 2026-08-06: PR #3 remained mergeable with no reviews or unresolved review
+  threads and was merged with merge commit
+  `cc3f8b583c6cb2e8a558780c6c1d886dd4b51ea7`. Main CI run `31105858348`
+  and tag CI run `31105911672` both completed successfully.
+- 2026-08-06: Created annotated tag `v0.2.0`. Its immutable tag object is
+  `9a55bd448ed40bf8968d64a1d24c5941b630b7cc`, and the GitHub tag API proves
+  that it peels to merge commit `cc3f8b583c6cb2e8a558780c6c1d886dd4b51ea7`.
+  Release run `31105912137` passed validation, all four native full test and
+  binary-smoke jobs, exact-member/checksum publication checks, and publish.
+  The resulting GitHub Release is non-draft and non-prerelease.
+- 2026-08-06: Downloaded the five public release assets into a fresh mode-700
+  directory. `sha256sum --check SHA256SUMS` passed all four archives. Every
+  tar contains only `LICENSE`, `README.md`, and `aster`; the Windows zip
+  contains only `LICENSE`, `README.md`, and `aster.exe`. The downloaded Linux
+  binary reports `aster 0.2.0`, checks `examples/governed-note/main.aster`, and
+  is an x86-64 static PIE (`ELF` type `DYN`). The release, every asset, and the
+  Pages root returned HTTP 200. Pages still served the prior v0.1.0 content:
+  the first deployment stalled until cancellation, and same-commit recovery
+  runs were cancelled because Pages deployment build versions must be unique.
+  A post-release evidence commit provides a new immutable deployment version;
+  Pages content and link verification remain required before plan completion.
 
 ## Surprises & Discoveries
 
@@ -231,5 +252,7 @@ authority it already possesses. Production deployment still requires process
 isolation, least privilege, protected trace/snapshot storage, provider-specific
 authenticity controls, and idempotent recovery.
 
-Public PR, merge, annotated tag, workflow, Pages, and downloaded-asset evidence
-are appended here after the immutable `v0.2.0` publication audit.
+The public PR, merge, annotated tag, release workflow, and downloaded-asset
+evidence are recorded above. The immutable release is healthy; the remaining
+completion item is a successful Pages deployment from a new post-release
+commit followed by external v0.2.0 headline and link verification.
