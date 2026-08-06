@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use aster_ir::lower;
 use aster_runtime::{
-    CapabilityGrant, CapabilityGrants, EffectKind, FixtureDriver, FixtureEntry, FixtureSet,
-    ReplayError, RunError, StartRequest, Trace, canonical_json, canonical_sha256, record_run,
-    record_run_evidenced, replay_run,
+    CapabilityGrant, CapabilityGrants, EffectDriver, EffectKind, EffectResolution, FixtureDriver,
+    FixtureEntry, FixtureSet, RecordProgress, RecordSession, ReplayError, RunError, StartRequest,
+    Trace, canonical_json, canonical_sha256, record_run, record_run_evidenced, replay_run,
 };
 use aster_semantics::check_source;
 use aster_syntax::SourceFile;
@@ -167,6 +167,83 @@ fn reseal(trace: &mut Trace) {
 }
 
 #[test]
+fn record_session_requires_admission_before_resolution() {
+    let mut session =
+        RecordSession::start(meeting_program(), start_request()).expect("session starts");
+    let request = match session.progress().expect("session progresses") {
+        RecordProgress::AwaitingAdmission(request) => request,
+        other => panic!("expected admission, got {other:?}"),
+    };
+    assert_eq!(request.kind, EffectKind::Model);
+    assert!(matches!(
+        session.resolve(&EffectResolution {
+            request_hash: request.request_hash,
+            payload: json!({}),
+            actual_usage: BTreeMap::new(),
+        }),
+        Err(RunError::SessionPhase)
+    ));
+}
+
+#[test]
+fn record_session_restore_resumes_the_same_admitted_effect() {
+    let program = meeting_program();
+    let mut session =
+        RecordSession::start(program.clone(), start_request()).expect("session starts");
+    let request = match session.progress().expect("session progresses") {
+        RecordProgress::AwaitingAdmission(request) => request,
+        other => panic!("expected admission, got {other:?}"),
+    };
+    let driver = fixture_driver();
+    let preview = driver.preview(&request).expect("fixture preview matches");
+    let admitted = session
+        .admit(&request.request_hash, preview.max_usage)
+        .expect("effect is admitted");
+    let original_trace = session.trace().clone();
+
+    let mut restored = RecordSession::restore(program, admitted.snapshot.clone(), original_trace)
+        .expect("admitted session restores");
+
+    assert_eq!(
+        restored.progress().expect("restored session progresses"),
+        RecordProgress::AwaitingResolution(Box::new(admitted))
+    );
+    assert_eq!(restored.trace(), session.trace());
+    assert_eq!(restored.snapshots(), session.snapshots());
+}
+
+#[test]
+fn record_session_rejects_mismatched_resolution_before_tracing_it() {
+    let mut session =
+        RecordSession::start(meeting_program(), start_request()).expect("session starts");
+    let request = match session.progress().expect("session progresses") {
+        RecordProgress::AwaitingAdmission(request) => request,
+        other => panic!("expected admission, got {other:?}"),
+    };
+    let driver = fixture_driver();
+    let preview = driver.preview(&request).expect("fixture preview matches");
+    session
+        .admit(&request.request_hash, preview.max_usage)
+        .expect("effect is admitted");
+
+    assert!(matches!(
+        session.resolve(&EffectResolution {
+            request_hash: "substituted-request-hash".to_owned(),
+            payload: json!({"content": "PRIVATE_RESOLUTION_VALUE"}),
+            actual_usage: BTreeMap::new(),
+        }),
+        Err(RunError::SessionPhase)
+    ));
+    assert!(
+        session
+            .trace()
+            .entries
+            .iter()
+            .all(|entry| entry.kind != "effect_resolved")
+    );
+}
+
+#[test]
 fn meeting_record_and_driver_free_replay_have_identical_state() {
     // Catches replay implementations that merely trust recorded final output.
     let program = meeting_program();
@@ -181,6 +258,52 @@ fn meeting_record_and_driver_free_replay_have_identical_state() {
     assert_eq!(driver.call_count(EffectKind::Write), 1);
     recorded.trace.verify().expect("recorded trace verifies");
     assert_eq!(recorded.snapshots.len(), 5);
+    let effect_boundary_kinds = recorded
+        .trace
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            matches!(
+                entry.kind.as_str(),
+                "effect_requested"
+                    | "budget_reserved"
+                    | "snapshot_written"
+                    | "effect_resolved"
+                    | "budget_settled"
+            )
+            .then_some(entry.kind.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        effect_boundary_kinds,
+        vec![
+            "effect_requested",
+            "budget_reserved",
+            "snapshot_written",
+            "effect_resolved",
+            "budget_settled",
+            "effect_requested",
+            "budget_reserved",
+            "snapshot_written",
+            "effect_resolved",
+            "budget_settled",
+            "effect_requested",
+            "budget_reserved",
+            "snapshot_written",
+            "effect_resolved",
+            "budget_settled",
+            "effect_requested",
+            "budget_reserved",
+            "snapshot_written",
+            "effect_resolved",
+            "budget_settled",
+            "effect_requested",
+            "budget_reserved",
+            "snapshot_written",
+            "effect_resolved",
+            "budget_settled",
+        ]
+    );
 
     let replayed = replay_run(program, start, &recorded.trace).expect("semantic replay succeeds");
     assert_eq!(

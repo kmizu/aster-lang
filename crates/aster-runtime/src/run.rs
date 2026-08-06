@@ -1,10 +1,13 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
 use crate::{
-    AuditEvent, DriverError, EffectDriver, EffectRequest, EffectResolution, Machine, MachineError,
-    MachineSnapshot, RunOutcome, StartRequest, Step, Trace, TraceError, canonical_sha256,
+    AuditEvent, DriverError, EffectDriver, EffectRequest, EffectResolution, FixturePreview,
+    Machine, MachineError, MachineSnapshot, RunOutcome, StartRequest, Step, Trace, TraceError,
+    canonical_sha256,
 };
 use aster_ir::Program;
 
@@ -31,6 +34,297 @@ pub struct RecordFailure {
     pub snapshots: Vec<MachineSnapshot>,
 }
 
+/// One effect admitted after its variable usage has been reserved durably.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdmittedEffect {
+    /// Exact request produced by the deterministic machine.
+    pub request: EffectRequest,
+    /// Variable usage maximums reserved before external execution.
+    pub maximums: BTreeMap<String, u64>,
+    /// Sealed continuation captured before external execution.
+    pub snapshot: MachineSnapshot,
+    /// Canonical hash of the complete sealed snapshot artifact.
+    pub snapshot_hash: String,
+    /// Next trace position bound into the snapshot.
+    pub trace_position: u64,
+    /// Trace chain head bound into the snapshot.
+    pub trace_hash: String,
+}
+
+/// Observable suspension or terminal state of a record session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RecordProgress {
+    /// A request requires declared usage maximums before it can execute.
+    AwaitingAdmission(EffectRequest),
+    /// The admitted request may now be resolved exactly once.
+    AwaitingResolution(Box<AdmittedEffect>),
+    /// The machine committed its final state and return value.
+    Completed(RunOutcome),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RecordPhase {
+    Running,
+    AwaitingAdmission(EffectRequest),
+    AwaitingResolution(Box<AdmittedEffect>),
+    Completed(RunOutcome),
+}
+
+/// Pure, transport-independent record-mode state machine.
+pub struct RecordSession {
+    machine: Machine,
+    trace: Trace,
+    snapshots: Vec<MachineSnapshot>,
+    phase: RecordPhase,
+}
+
+impl RecordSession {
+    /// Starts a session and writes deterministic run identity evidence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid start data, entry points, grants, state, or trace data.
+    pub fn start(program: Program, start: StartRequest) -> Result<Self, RunError> {
+        Self::start_evidenced(program, start).map_err(|failure| failure.error)
+    }
+
+    fn start_evidenced(program: Program, start: StartRequest) -> Result<Self, RecordFailure> {
+        let input_hash = canonical_sha256(&start)
+            .map_err(|error| initial_record_failure(RunError::Data(error.to_string())))?;
+        let run_id = canonical_sha256(&json!({
+            "program_hash": program.program_hash,
+            "input_hash": input_hash,
+        }))
+        .map_err(|error| initial_record_failure(RunError::Data(error.to_string())))?;
+        let mut trace = Trace::new(run_id);
+        let initialized = (|| -> Result<Machine, RunError> {
+            trace.append(
+                "run_header",
+                json!({
+                    "program_hash": program.program_hash,
+                    "input_hash": input_hash,
+                    "agent": start.agent,
+                    "event": start.event,
+                }),
+            )?;
+            trace.append(
+                "event_received",
+                json!({"event_id": start.event_id, "event_time": start.event_time}),
+            )?;
+            trace.append(
+                "fingerprints",
+                json!({
+                    "program": program.program_hash,
+                    "event": canonical_sha256(&json!({
+                        "agent": start.agent,
+                        "event": start.event,
+                        "event_id": start.event_id,
+                        "event_time": start.event_time,
+                        "agent_arguments": start.agent_arguments,
+                        "payload": start.payload,
+                    })).map_err(|error| RunError::Data(error.to_string()))?,
+                    "state": canonical_sha256(&start.state)
+                        .map_err(|error| RunError::Data(error.to_string()))?,
+                    "capabilities": canonical_sha256(&start.capabilities)
+                        .map_err(|error| RunError::Data(error.to_string()))?,
+                }),
+            )?;
+            Machine::start(program, start).map_err(RunError::Machine)
+        })();
+        match initialized {
+            Ok(machine) => Ok(Self {
+                machine,
+                trace,
+                snapshots: Vec::new(),
+                phase: RecordPhase::Running,
+            }),
+            Err(error) => Err(record_failure(error, trace, Vec::new())),
+        }
+    }
+
+    /// Restores the admitted effect bound into a sealed snapshot and trace.
+    ///
+    /// # Errors
+    ///
+    /// Rejects invalid snapshots, trace checkpoints, missing pending effects,
+    /// or malformed reserved-usage evidence.
+    pub fn restore(
+        program: Program,
+        snapshot: MachineSnapshot,
+        mut trace: Trace,
+    ) -> Result<Self, RunError> {
+        trace.rewind_to(snapshot.trace_position, &snapshot.trace_hash)?;
+        let mut machine = Machine::restore(program, snapshot.clone())?;
+        let Step::Yield(request) = machine.step() else {
+            return Err(RunError::SessionPhase);
+        };
+        let budget_evidence = machine.pending_budget_evidence()?;
+        let maximums = serde_json::from_value(
+            budget_evidence
+                .get("variable_maximums")
+                .cloned()
+                .ok_or(RunError::SessionPhase)?,
+        )
+        .map_err(|error| RunError::Data(error.to_string()))?;
+        let snapshot_hash =
+            canonical_sha256(&snapshot).map_err(|error| RunError::Data(error.to_string()))?;
+        trace.append("snapshot_written", json!({"snapshot_hash": snapshot_hash}))?;
+        let admitted = AdmittedEffect {
+            request,
+            maximums,
+            snapshot: snapshot.clone(),
+            snapshot_hash,
+            trace_position: snapshot.trace_position,
+            trace_hash: snapshot.trace_hash.clone(),
+        };
+        Ok(Self {
+            machine,
+            trace,
+            snapshots: vec![snapshot],
+            phase: RecordPhase::AwaitingResolution(Box::new(admitted)),
+        })
+    }
+
+    /// Advances pure instructions until admission, resolution, or completion.
+    ///
+    /// # Errors
+    ///
+    /// Returns controlled machine, trace, or serialization failures.
+    pub fn progress(&mut self) -> Result<RecordProgress, RunError> {
+        match self.phase.clone() {
+            RecordPhase::AwaitingAdmission(request) => {
+                return Ok(RecordProgress::AwaitingAdmission(request));
+            }
+            RecordPhase::AwaitingResolution(admitted) => {
+                return Ok(RecordProgress::AwaitingResolution(admitted));
+            }
+            RecordPhase::Completed(outcome) => return Ok(RecordProgress::Completed(outcome)),
+            RecordPhase::Running => {}
+        }
+        loop {
+            let step = self.machine.step();
+            append_audit_events(&mut self.trace, self.machine.take_audit_events())?;
+            match step {
+                Step::Continue => {}
+                Step::Yield(request) => {
+                    self.trace.append("effect_requested", to_value(&request)?)?;
+                    self.phase = RecordPhase::AwaitingAdmission(request.clone());
+                    return Ok(RecordProgress::AwaitingAdmission(request));
+                }
+                Step::Completed(outcome) => {
+                    self.trace
+                        .append("state_committed", to_value(&outcome.state)?)?;
+                    self.trace.append("run_completed", to_value(&outcome)?)?;
+                    self.phase = RecordPhase::Completed(outcome.clone());
+                    return Ok(RecordProgress::Completed(outcome));
+                }
+                Step::Failed(error) => return Err(RunError::Machine(error)),
+            }
+        }
+    }
+
+    /// Reserves usage and seals the pending continuation before execution.
+    ///
+    /// # Errors
+    ///
+    /// Rejects out-of-phase or mismatched admission, unavailable budget,
+    /// snapshot failure, and trace failure.
+    pub fn admit(
+        &mut self,
+        request_hash: &str,
+        maximums: BTreeMap<String, u64>,
+    ) -> Result<AdmittedEffect, RunError> {
+        let request = match &self.phase {
+            RecordPhase::AwaitingAdmission(request) if request.request_hash == request_hash => {
+                request.clone()
+            }
+            _ => return Err(RunError::SessionPhase),
+        };
+        self.machine.reserve_pending_usage(&maximums)?;
+        self.trace
+            .append("budget_reserved", self.machine.pending_budget_evidence()?)?;
+        let (trace_position, trace_hash) = self.trace.checkpoint()?;
+        self.machine
+            .set_trace_checkpoint(trace_position, trace_hash.clone());
+        let snapshot = self.machine.snapshot()?;
+        let snapshot_hash =
+            canonical_sha256(&snapshot).map_err(|error| RunError::Data(error.to_string()))?;
+        self.trace
+            .append("snapshot_written", json!({"snapshot_hash": snapshot_hash}))?;
+        self.snapshots.push(snapshot.clone());
+        let admitted = AdmittedEffect {
+            request,
+            maximums,
+            snapshot,
+            snapshot_hash,
+            trace_position,
+            trace_hash,
+        };
+        self.phase = RecordPhase::AwaitingResolution(Box::new(admitted.clone()));
+        Ok(admitted)
+    }
+
+    /// Settles one admitted effect resolution and resumes pure execution.
+    ///
+    /// # Errors
+    ///
+    /// Rejects resolution before admission, request mismatch, malformed result
+    /// data, actual usage above the reservation, and trace failure.
+    pub fn resolve(&mut self, resolution: &EffectResolution) -> Result<(), RunError> {
+        let admitted = match &self.phase {
+            RecordPhase::AwaitingResolution(admitted)
+                if admitted.request.request_hash == resolution.request_hash =>
+            {
+                admitted.clone()
+            }
+            _ => return Err(RunError::SessionPhase),
+        };
+        self.trace
+            .append("effect_resolved", to_value(resolution)?)?;
+        self.machine.supply(resolution)?;
+        append_audit_events(&mut self.trace, self.machine.take_audit_events())?;
+        self.trace.append(
+            "budget_settled",
+            budget_settlement_evidence(
+                &admitted.maximums,
+                &resolution.actual_usage,
+                &self.machine.budget_evidence()?,
+            )
+            .map_err(RunError::Data)?,
+        )?;
+        self.phase = RecordPhase::Running;
+        Ok(())
+    }
+
+    /// Returns the complete in-memory hash-chained trace so far.
+    #[must_use]
+    pub fn trace(&self) -> &Trace {
+        &self.trace
+    }
+
+    /// Returns sealed snapshots in effect-admission order.
+    #[must_use]
+    pub fn snapshots(&self) -> &[MachineSnapshot] {
+        &self.snapshots
+    }
+
+    /// Converts a completed session into its durable success evidence.
+    #[must_use]
+    pub fn finish(self, outcome: RunOutcome) -> RecordResult {
+        RecordResult {
+            outcome,
+            trace: self.trace,
+            snapshots: self.snapshots,
+        }
+    }
+
+    /// Appends a controlled terminal failure and retains partial evidence.
+    #[must_use]
+    pub fn fail(self, error: RunError) -> RecordFailure {
+        record_failure(error, self.trace, self.snapshots)
+    }
+}
+
 /// Drives a machine through admitted fixture effects and records every boundary.
 ///
 /// # Errors
@@ -55,44 +349,39 @@ pub fn record_run_evidenced<D: EffectDriver>(
     start: StartRequest,
     driver: &mut D,
 ) -> Result<RecordResult, RecordFailure> {
-    let input_hash = match canonical_sha256(&start) {
-        Ok(value) => value,
-        Err(error) => return Err(initial_record_failure(RunError::Data(error.to_string()))),
-    };
-    let run_id = match canonical_sha256(&json!({
-        "program_hash": program.program_hash,
-        "input_hash": input_hash,
-    })) {
-        Ok(value) => value,
-        Err(error) => return Err(initial_record_failure(RunError::Data(error.to_string()))),
-    };
-    let mut trace = Trace::new(run_id);
-    let mut snapshots = Vec::new();
-    let result = record_attempt(
-        program,
-        start,
-        driver,
-        &input_hash,
-        &mut trace,
-        &mut snapshots,
-    );
-    match result {
-        Ok(outcome) => Ok(RecordResult {
-            outcome,
-            trace,
-            snapshots,
-        }),
-        Err(mut error) => {
-            if let Err(trace_error) =
-                trace.append("run_failed", json!({"error": error.to_string()}))
-            {
-                error = RunError::Trace(trace_error);
+    let mut session = RecordSession::start_evidenced(program, start)?;
+    let mut preview: Option<FixturePreview> = None;
+    loop {
+        let progress = match session.progress() {
+            Ok(progress) => progress,
+            Err(error) => return Err(session.fail(error)),
+        };
+        match progress {
+            RecordProgress::AwaitingAdmission(request) => {
+                let next_preview = match driver.preview(&request) {
+                    Ok(preview) => preview,
+                    Err(error) => return Err(session.fail(RunError::Driver(error))),
+                };
+                if let Err(error) =
+                    session.admit(&request.request_hash, next_preview.max_usage.clone())
+                {
+                    return Err(session.fail(error));
+                }
+                preview = Some(next_preview);
             }
-            Err(RecordFailure {
-                error,
-                trace,
-                snapshots,
-            })
+            RecordProgress::AwaitingResolution(admitted) => {
+                let Some(next_preview) = preview.take() else {
+                    return Err(session.fail(RunError::SessionPhase));
+                };
+                let resolution = match driver.resolve(&admitted.request, &next_preview) {
+                    Ok(resolution) => resolution,
+                    Err(error) => return Err(session.fail(RunError::Driver(error))),
+                };
+                if let Err(error) = session.resolve(&resolution) {
+                    return Err(session.fail(error));
+                }
+            }
+            RecordProgress::Completed(outcome) => return Ok(session.finish(outcome)),
         }
     }
 }
@@ -105,85 +394,18 @@ fn initial_record_failure(error: RunError) -> RecordFailure {
     }
 }
 
-fn record_attempt<D: EffectDriver>(
-    program: Program,
-    start: StartRequest,
-    driver: &mut D,
-    input_hash: &str,
-    trace: &mut Trace,
-    snapshots: &mut Vec<MachineSnapshot>,
-) -> Result<RunOutcome, RunError> {
-    trace.append(
-        "run_header",
-        json!({
-            "program_hash": program.program_hash,
-            "input_hash": input_hash,
-            "agent": start.agent,
-            "event": start.event,
-        }),
-    )?;
-    trace.append(
-        "event_received",
-        json!({"event_id": start.event_id, "event_time": start.event_time}),
-    )?;
-    trace.append(
-        "fingerprints",
-        json!({
-            "program": program.program_hash,
-            "event": canonical_sha256(&json!({
-                "agent": start.agent,
-                "event": start.event,
-                "event_id": start.event_id,
-                "event_time": start.event_time,
-                "agent_arguments": start.agent_arguments,
-                "payload": start.payload,
-            })).map_err(|error| RunError::Data(error.to_string()))?,
-            "state": canonical_sha256(&start.state)
-                .map_err(|error| RunError::Data(error.to_string()))?,
-            "capabilities": canonical_sha256(&start.capabilities)
-                .map_err(|error| RunError::Data(error.to_string()))?,
-        }),
-    )?;
-    let mut machine = Machine::start(program, start)?;
-    loop {
-        let step = machine.step();
-        append_audit_events(trace, machine.take_audit_events())?;
-        match step {
-            Step::Continue => {}
-            Step::Yield(request) => {
-                trace.append("effect_requested", to_value(&request)?)?;
-                let preview = driver.preview(&request)?;
-                machine.reserve_pending_usage(&preview.max_usage)?;
-                trace.append("budget_reserved", machine.pending_budget_evidence()?)?;
-                let (position, hash) = trace.checkpoint()?;
-                machine.set_trace_checkpoint(position, hash);
-                let snapshot = machine.snapshot()?;
-                trace.append(
-                    "snapshot_written",
-                    json!({"snapshot_hash": canonical_sha256(&snapshot).map_err(|error| RunError::Data(error.to_string()))?}),
-                )?;
-                snapshots.push(snapshot);
-                let resolution = driver.resolve(&request, &preview)?;
-                trace.append("effect_resolved", to_value(&resolution)?)?;
-                machine.supply(&resolution)?;
-                append_audit_events(trace, machine.take_audit_events())?;
-                trace.append(
-                    "budget_settled",
-                    budget_settlement_evidence(
-                        &preview.max_usage,
-                        &resolution.actual_usage,
-                        &machine.budget_evidence()?,
-                    )
-                    .map_err(RunError::Data)?,
-                )?;
-            }
-            Step::Completed(outcome) => {
-                trace.append("state_committed", to_value(&outcome.state)?)?;
-                trace.append("run_completed", to_value(&outcome)?)?;
-                return Ok(outcome);
-            }
-            Step::Failed(error) => return Err(RunError::Machine(error)),
-        }
+fn record_failure(
+    mut error: RunError,
+    mut trace: Trace,
+    snapshots: Vec<MachineSnapshot>,
+) -> RecordFailure {
+    if let Err(trace_error) = trace.append("run_failed", json!({"error": error.to_string()})) {
+        error = RunError::Trace(trace_error);
+    }
+    RecordFailure {
+        error,
+        trace,
+        snapshots,
     }
 }
 
@@ -376,6 +598,8 @@ pub enum RunError {
     Driver(#[from] DriverError),
     #[error(transparent)]
     Trace(#[from] TraceError),
+    #[error("record session phase mismatch")]
+    SessionPhase,
     #[error("record data failure: {0}")]
     Data(String),
 }

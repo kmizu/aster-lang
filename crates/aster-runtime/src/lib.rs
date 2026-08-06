@@ -24,8 +24,8 @@ pub use machine::{
     MachineSnapshot, RunOutcome, StartRequest, Step,
 };
 pub use run::{
-    RecordFailure, RecordResult, ReplayError, RunError, budget_settlement_evidence, record_run,
-    record_run_evidenced, replay_run,
+    AdmittedEffect, RecordFailure, RecordProgress, RecordResult, RecordSession, ReplayError,
+    RunError, budget_settlement_evidence, record_run, record_run_evidenced, replay_run,
 };
 pub use trace::{Trace, TraceEntry, TraceError};
 pub use value::{ProvenancedValue, ReceiptValue, RuntimeValue, SnapshotError, snapshot_values};
