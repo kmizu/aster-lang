@@ -983,3 +983,18 @@ Pages deployment is updated.
 - Task 4 Step 7 remains unchecked. Public Pages byte comparison, deployed
   anchor inspection, publication, and deployment remain pending external
   integration; no public-site update is claimed.
+
+### Final branch review
+
+- The whole-branch review found two Important issues: insufficient contrast for
+  amber text on the light Why surface, and inaccurate attribution of replay
+  guarantees to `run_completed`. Commit `489ae6c` addressed both with a
+  paper-only `5.392:1` text token, corrected event descriptions, and negative
+  contract fixtures.
+- A fresh scoped re-review independently recalculated the contrast at
+  `5.391511:1`, checked the public explanation against runtime replay behavior,
+  and marked both findings addressed. It found no new Critical or Important
+  regression and approved the fix wave.
+- Publication remains deliberately outside the completed branch review. Task 4
+  Step 7 stays pending until this branch is integrated and GitHub Pages has
+  deployed the integrated bytes.
