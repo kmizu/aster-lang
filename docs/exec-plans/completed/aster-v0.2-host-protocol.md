@@ -112,6 +112,10 @@ The step-by-step implementation plan is
   drives through approval, stops at the write grant, restores its sealed
   continuation, and proves the first post-handshake frame is the identical
   write grant rather than a second preview/admission.
+- 2026-08-06: Pushed `agent/v0.2-host-protocol` at validation commit
+  `5261cd1` and opened ready PR #3 against `main`. Both the push CI run
+  `31105595264` and pull-request CI run `31105610743` completed successfully;
+  each ran the repository `./scripts/check.sh` job on the exact head commit.
 
 ## Surprises & Discoveries
 
