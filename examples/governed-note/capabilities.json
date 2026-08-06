@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "grants": [
+    {
+      "capability": "ModelUse",
+      "arguments": ["writer"]
+    },
+    {
+      "capability": "WorkspaceRead",
+      "arguments": ["workspace-001"]
+    },
+    {
+      "capability": "WorkspaceWrite",
+      "arguments": ["workspace-001"]
+    },
+    {
+      "capability": "HumanApproval",
+      "arguments": ["user-001"]
+    }
+  ]
+}

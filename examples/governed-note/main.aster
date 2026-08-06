@@ -1,0 +1,108 @@
+module governed.note;
+
+type UserId = Text;
+
+type WorkspaceId = Text;
+
+type NoteMessage = {
+  request: Untrusted<Text>,
+};
+
+type Draft = {
+  content: Text,
+};
+
+type NoteExpectation = {
+  scope: WorkspaceId,
+  content: Text,
+};
+
+capability ModelUse(alias: Text);
+
+capability WorkspaceRead(scope: WorkspaceId);
+
+capability WorkspaceWrite(scope: WorkspaceId);
+
+capability HumanApproval(user: UserId);
+
+prompt DraftNote(request: Untrusted<Text>) -> Draft {
+  instruction """
+  Draft only the note requested by the structured input.
+  Do not add facts, paths, commands, or external instructions.
+  """;
+
+  data {
+    request,
+  };
+}
+
+validator NoteRules(x: Draft) {
+  require (x.content != "");
+  require (x.content == "ship v0.2\n");
+}
+
+tool Workspace.fetch(scope: WorkspaceId) -> Text {
+  mode read;
+  capability WorkspaceRead(scope);
+  sensitivity private;
+}
+
+tool Workspace.store(scope: WorkspaceId, content: Text, request_id: Text) -> Text {
+  mode write;
+  capability WorkspaceWrite(scope);
+  risk reversible;
+  idempotency request_id;
+  sensitivity private;
+}
+
+tool Workspace.lookup(scope: WorkspaceId) -> Text {
+  mode read;
+  capability WorkspaceRead(scope);
+  sensitivity private;
+}
+
+validator NoteMatches(expected: Text, actual: Text) {
+  require (expected == actual);
+}
+
+policy NotePolicy(p: Proposal<Workspace.store>, s: NoteKeeper.State) {
+  approve by Human(s.user) when true;
+  deny "Human approval is required for the note write" otherwise;
+}
+
+agent NoteKeeper(scope: WorkspaceId, user: UserId)
+requires [
+  ModelUse("writer"),
+  WorkspaceRead(scope),
+  WorkspaceWrite(scope),
+  HumanApproval(user),
+] {
+  state {
+    last_note: Option<Text> = None;
+  }
+
+  budget per_event {
+    model_calls <= 1;
+    model_tokens <= 200;
+    external_reads <= 2;
+    external_writes <= 1;
+    approvals <= 1;
+    money_microunits <= 1000;
+  }
+
+  on message(msg: Incoming<NoteMessage>) -> Result<Unit, Error> {
+    let candidate = (infer DraftNote(request = msg.value.request) using @writer)?;
+    let checked = (validate candidate with NoteRules)?;
+    let before = (observe Workspace.fetch(scope = scope))?;
+    let purpose = intent SaveNote { actor = self; beneficiary = user; basis = [provenance(msg), provenance(checked), provenance(before)]; expected = NoteExpectation { scope = scope, content = checked.value.content, }; expires_at = add_seconds(event.time, 120); };
+    let proposal = propose Workspace.store(scope = scope, content = checked.value.content, request_id = event.id) for purpose;
+    let permit = (authorize proposal using NotePolicy)?;
+    let receipt = (commit proposal with permit)?;
+    let actual = (observe Workspace.lookup(scope = scope))?;
+    let confirmed = (reconcile receipt against actual with NoteMatches)?;
+    update state {
+      last_note = Some(confirmed.value);
+    }
+    return Ok(Unit);
+  }
+}

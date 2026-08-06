@@ -32,7 +32,7 @@ The step-by-step implementation plan is
 - [x] Implement the transport-independent `HostSession` state machine.
 - [x] Add bounded JSONL CLI transport, persistence, and crash resume.
 - [x] Register stable diagnostics and prove payload redaction.
-- [ ] Add the governed-note self-use example and end-to-end host proof.
+- [x] Add the governed-note self-use example and end-to-end host proof.
 - [ ] Make the protocol and its trust boundary normative in documentation.
 - [ ] Bump v0.2.0 and generalize four-platform release automation and site.
 - [ ] Pass full validation, merge, tag, publish, and externally audit v0.2.0.
@@ -71,6 +71,12 @@ The step-by-step implementation plan is
   meanings and remediation. Runtime and CLI sentinel tests verify hostile
   private/secret frame values do not appear in typed errors, failed frames,
   stderr, traces, snapshots, or output-state artifacts.
+- 2026-08-06: Added the synthetic `governed-note` program and used a Rust host
+  harness as a coding-agent analogue. It drove model/read/approval/write/read,
+  proved preview caused no filesystem mutation, performed the temporary-file
+  write only after the matching durable grant, reconciled the result, and
+  reproduced the final state byte-for-byte with driver-free replay. Full CLI
+  tests and strict CLI clippy passed.
 
 ## Surprises & Discoveries
 
@@ -94,6 +100,10 @@ The step-by-step implementation plan is
   writing `execute_grant`. A process killed immediately after the host reads
   the grant can therefore restore the exact admitted continuation without a
   second admission.
+- `read` and `write` are reserved source words and cannot currently be used as
+  qualified tool-name segments. The example therefore names the tool methods
+  `Workspace.fetch` and `Workspace.store`; their governed effect kinds remain
+  `read` and `write`.
 
 ## Decision Log
 
@@ -127,6 +137,10 @@ The step-by-step implementation plan is
   redacted summary. Raw serde errors and complete input frames are discarded at
   the decoding boundary before CLI error construction or trace failure
   evidence.
+- Keep ASTER 0.1 syntax unchanged for v0.2: use non-keyword tool identities
+  instead of expanding qualified-name grammar solely for the self-use example.
+  The exact synthetic note allowlist provides an auditable non-empty bounded
+  validator without adding a new text-length built-in.
 
 ## Outcomes & Retrospective
 

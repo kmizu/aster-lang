@@ -12,6 +12,10 @@ fn example(name: &str) -> PathBuf {
     root().join("examples/meeting-scheduler").join(name)
 }
 
+fn governed_note_example(name: &str) -> PathBuf {
+    root().join("examples/governed-note").join(name)
+}
+
 fn host_args(directory: &Path) -> Vec<String> {
     vec![
         "host".to_owned(),
@@ -43,6 +47,33 @@ fn spawn(args: &[String]) -> Child {
         .stderr(Stdio::piped())
         .spawn()
         .expect("host starts")
+}
+
+fn governed_note_host_args(directory: &Path) -> Vec<String> {
+    vec![
+        "host".to_owned(),
+        governed_note_example("main.aster").display().to_string(),
+        "--agent".to_owned(),
+        "NoteKeeper".to_owned(),
+        "--event".to_owned(),
+        "message".to_owned(),
+        "--input".to_owned(),
+        governed_note_example("event.json").display().to_string(),
+        "--state".to_owned(),
+        governed_note_example("initial-state.json")
+            .display()
+            .to_string(),
+        "--capabilities".to_owned(),
+        governed_note_example("capabilities.json")
+            .display()
+            .to_string(),
+        "--trace".to_owned(),
+        directory.join("record.trace.jsonl").display().to_string(),
+        "--snapshot-dir".to_owned(),
+        directory.join("snapshots").display().to_string(),
+        "--output-state".to_owned(),
+        directory.join("record-state.json").display().to_string(),
+    ]
 }
 
 fn read_frame(reader: &mut impl BufRead) -> Value {
@@ -273,4 +304,155 @@ fn host_redaction_keeps_private_and_secret_values_out_of_all_outputs() {
     }
     assert!(!artifacts.contains(PRIVATE));
     assert!(!artifacts.contains(SECRET));
+}
+
+fn execute_governed_effect(grant: &Value, note_path: &Path) -> Value {
+    let identity = grant["payload"]["request"]["identity"]
+        .as_str()
+        .expect("effect identity");
+    match identity {
+        "DraftNote" => json!({"content": "ship v0.2\n"}),
+        "Workspace.fetch" | "Workspace.lookup" => {
+            json!(std::fs::read_to_string(note_path).expect("note reads"))
+        }
+        "NotePolicy" => json!({"approved": true}),
+        "Workspace.store" => {
+            let content = grant["payload"]["request"]["payload"]["arguments"]["content"]
+                .as_str()
+                .expect("write content");
+            std::fs::write(note_path, content).expect("granted note writes");
+            json!(content)
+        }
+        other => panic!("unexpected effect identity {other}"),
+    }
+}
+
+fn run_governed_note_host(directory: &Path, note_path: &Path) -> Vec<String> {
+    let mut child = spawn(&governed_note_host_args(directory));
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    let hello = read_frame(&mut stdout);
+    send_frame(
+        child.stdin.as_mut().expect("stdin"),
+        &reply(
+            &hello,
+            "hello_ack",
+            &json!({"protocol": "aster-host", "protocol_version": 1}),
+        ),
+    );
+
+    let mut effect_kinds = Vec::new();
+    loop {
+        let preview = read_frame(&mut stdout);
+        if preview["kind"] == "completed" {
+            break;
+        }
+        assert_eq!(preview["kind"], "effect_preview");
+        let request = &preview["payload"]["request"];
+        let kind = request["kind"].as_str().expect("effect kind");
+        effect_kinds.push(kind.to_owned());
+        if kind == "write" {
+            assert_eq!(
+                std::fs::read_to_string(note_path).expect("preview note reads"),
+                "before\n",
+                "a preview must not authorize filesystem mutation"
+            );
+        }
+        let max_usage = if kind == "model" {
+            json!({"model_tokens": 100})
+        } else {
+            json!({})
+        };
+        send_frame(
+            child.stdin.as_mut().expect("stdin"),
+            &reply(
+                &preview,
+                "effect_admission",
+                &json!({
+                    "request_hash": request["request_hash"],
+                    "max_usage": max_usage,
+                }),
+            ),
+        );
+
+        let grant = read_frame(&mut stdout);
+        assert_eq!(grant["kind"], "execute_grant");
+        assert_eq!(grant["payload"]["request"], *request);
+        let payload = execute_governed_effect(&grant, note_path);
+        let actual_usage = if kind == "model" {
+            json!({"model_tokens": 12})
+        } else {
+            json!({})
+        };
+        send_frame(
+            child.stdin.as_mut().expect("stdin"),
+            &reply(
+                &grant,
+                "effect_resolution",
+                &json!({
+                    "request_hash": grant["payload"]["request"]["request_hash"],
+                    "execution_grant_hash": grant["payload"]["execution_grant_hash"],
+                    "payload": payload,
+                    "actual_usage": actual_usage,
+                }),
+            ),
+        );
+    }
+    drop(child.stdin.take());
+    let status = child.wait().expect("host exits");
+    assert!(status.success(), "host exits successfully: {status}");
+    effect_kinds
+}
+
+fn replay_governed_note(directory: &Path) -> PathBuf {
+    let replay_state = directory.join("replay-state.json");
+    let replay = Command::new(env!("CARGO_BIN_EXE_aster"))
+        .args([
+            "replay",
+            governed_note_example("main.aster")
+                .to_str()
+                .expect("source path"),
+            "--trace",
+            directory
+                .join("record.trace.jsonl")
+                .to_str()
+                .expect("trace path"),
+            "--input",
+            governed_note_example("event.json")
+                .to_str()
+                .expect("event path"),
+            "--state",
+            governed_note_example("initial-state.json")
+                .to_str()
+                .expect("state path"),
+            "--capabilities",
+            governed_note_example("capabilities.json")
+                .to_str()
+                .expect("capabilities path"),
+            "--output-state",
+            replay_state.to_str().expect("replay output path"),
+        ])
+        .status()
+        .expect("replay starts");
+    assert!(replay.success(), "replay exits successfully: {replay}");
+    replay_state
+}
+
+#[test]
+fn codex_style_host_executes_governed_note_then_replays_byte_identically() {
+    let directory = tempfile::tempdir().expect("temporary workspace");
+    let note_path = directory.path().join("note.txt");
+    std::fs::write(&note_path, "before\n").expect("initial note writes");
+
+    let effect_kinds = run_governed_note_host(directory.path(), &note_path);
+    assert_eq!(effect_kinds, ["model", "read", "approval", "write", "read"]);
+    assert_eq!(
+        std::fs::read_to_string(&note_path).expect("final note reads"),
+        "ship v0.2\n"
+    );
+
+    let replay_state = replay_governed_note(directory.path());
+    assert_eq!(
+        std::fs::read(directory.path().join("record-state.json")).expect("record state reads"),
+        std::fs::read(replay_state).expect("replay state reads")
+    );
 }
