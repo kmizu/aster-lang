@@ -34,7 +34,7 @@ done
 require_pattern index.html "<header(?:\\s|>)"
 require_pattern index.html "<main\\s+[^>]*id=[\"']main-content[\"']"
 require_pattern index.html "<footer(?:\\s|>)"
-for section in hero boundary evidence download docs; do
+for section in hero why quickstart evidence boundary protocol download docs; do
   require_pattern index.html "<section\\s+[^>]*id=[\"']${section}[\"']"
 done
 
@@ -43,6 +43,21 @@ require_text index.html 'styles.css'
 require_text index.html 'site.js'
 require_text index.html 'v0.2.0'
 require_text index.html 'SHA256SUMS'
+
+for text in \
+  'Judgment without authority.' \
+  'Prove it in five minutes.' \
+  'Fixture-backed record' \
+  'Driver-free replay' \
+  '34 trace entries' \
+  'record and replay states match' \
+  'effect_preview' \
+  'effect_admission' \
+  'execute_grant' \
+  'effect_resolution' \
+  'A preview is not authority.'; do
+  require_text index.html "$text"
+done
 
 for asset in \
   aster-v0.2.0-x86_64-unknown-linux-musl.tar.gz \

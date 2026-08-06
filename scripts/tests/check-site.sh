@@ -25,8 +25,19 @@ cat >"$valid_site/index.html" <<'EOF'
   <header>ASTER</header>
   <main id="main-content">
     <section id="hero"><h1>Authority before action.</h1></section>
+    <section id="why">Judgment without authority.</section>
+    <section id="quickstart">
+      <h2>Prove it in five minutes.</h2>
+      <p>Fixture-backed record</p>
+      <p>Driver-free replay</p>
+      <p>34 trace entries</p>
+    </section>
+    <section id="evidence">record and replay states match; driver calls 0</section>
     <section id="boundary">Candidate Proposal Permit Reconciliation</section>
-    <section id="evidence">driver calls 0</section>
+    <section id="protocol">
+      effect_preview effect_admission execute_grant effect_resolution
+      A preview is not authority.
+    </section>
     <section id="download">
       <a href="aster-v0.2.0-x86_64-unknown-linux-musl.tar.gz">Linux</a>
       <a href="aster-v0.2.0-aarch64-apple-darwin.tar.gz">macOS Apple</a>
@@ -78,6 +89,28 @@ fi
 expected="external site dependency is forbidden"
 if [[ "$output" != *"$expected"* ]]; then
   echo "site checker did not identify the external dependency" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+missing_protocol_site="$fixture_root/missing-protocol"
+mkdir -p "$missing_protocol_site"
+cp -R "$valid_site/." "$missing_protocol_site/"
+sed -i 's/execute_grant/execution_grant/' "$missing_protocol_site/index.html"
+
+set +e
+output=$("$checker" "$missing_protocol_site" 2>&1)
+task_status=$?
+set -e
+
+if [[ $task_status -eq 0 ]]; then
+  echo "site checker accepted a page without execute_grant" >&2
+  exit 1
+fi
+
+expected="missing site contract text in index.html: execute_grant"
+if [[ "$output" != *"$expected"* ]]; then
+  echo "site checker did not identify the missing host grant" >&2
   echo "$output" >&2
   exit 1
 fi

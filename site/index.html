@@ -20,10 +20,11 @@
         ASTER<span aria-hidden="true">°</span>
       </a>
       <nav aria-label="Main navigation">
-        <a href="#boundary">Concept</a>
-        <a href="#evidence">Evidence</a>
+        <a href="#why">Why</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="#protocol">Protocol</a>
         <a href="#download">Download</a>
-        <a href="https://github.com/kmizu/aster-lang">GitHub</a>
+        <a href="#docs">Docs</a>
       </nav>
       <span class="header-version">v0.2.0</span>
     </header>
@@ -41,8 +42,8 @@
             is checked after the effect.
           </p>
           <div class="hero-actions">
-            <a class="button button-primary" href="#download">
-              Download v0.2.0 <span aria-hidden="true">↓</span>
+            <a class="button button-primary" href="#quickstart">
+              Run the proof <span aria-hidden="true">↓</span>
             </a>
             <a
               class="button button-secondary"
@@ -77,9 +78,201 @@
         </ol>
       </section>
 
+      <section class="why section-light" id="why" aria-labelledby="why-title">
+        <div class="why-statement reveal" data-reveal>
+          <p class="section-index">01 / Why ASTER</p>
+          <h2 id="why-title" aria-label="Judgment without authority.">Judgment<br>without authority.</h2>
+          <p>Models are useful where answers require judgment. That is exactly why their output should remain data.</p>
+        </div>
+        <div class="why-comparison reveal" data-reveal>
+          <div class="comparison-row comparison-risk">
+            <span>Integration risk</span>
+            <div>
+              <strong>Model response → host tool call</strong>
+              <p>Without an enforced boundary, generated data can be consumed as an instruction beside ambient host authority.</p>
+            </div>
+          </div>
+          <div class="comparison-row comparison-aster">
+            <span>ASTER path</span>
+            <div>
+              <strong>Candidate → validation → governed effect</strong>
+              <p>The runtime keeps data, intent, authority, execution, and observed reality as separate transitions.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="quickstart section-dark" id="quickstart" aria-labelledby="quickstart-title">
+        <div class="section-heading reveal" data-reveal>
+          <p class="section-index">02 / Deterministic proof</p>
+          <h2 id="quickstart-title">Prove it in five minutes.</h2>
+          <p>Repository checkout · Bash · Rust 1.96 · synthetic fixtures only.</p>
+        </div>
+        <ol class="quickstart-steps">
+          <li class="quickstart-step reveal" data-reveal>
+            <span class="step-number">01</span>
+            <div>
+              <strong>Build and check</strong>
+              <p>Compile the pinned reference processor and validate the program.</p>
+            </div>
+            <pre><code>cargo build --release -p aster-cli --bin aster
+ASTER_DEMO_DIR=$(mktemp -d)
+./target/release/aster check examples/meeting-scheduler/main.aster</code></pre>
+          </li>
+          <li class="quickstart-step reveal" data-reveal>
+            <span class="step-number">02</span>
+            <div>
+              <strong>Fixture-backed record</strong>
+              <p>Execute five synthetic effects and record every governed boundary.</p>
+            </div>
+            <pre><code>./target/release/aster run examples/meeting-scheduler/main.aster \
+  --agent Scheduler --event message \
+  --input examples/meeting-scheduler/event.json \
+  --state examples/meeting-scheduler/initial-state.json \
+  --capabilities examples/meeting-scheduler/capabilities.json \
+  --fixtures examples/meeting-scheduler/fixtures.json \
+  --trace "$ASTER_DEMO_DIR/meeting.trace.jsonl" \
+  --snapshot-dir "$ASTER_DEMO_DIR/snapshots" \
+  --output-state "$ASTER_DEMO_DIR/record-state.json"</code></pre>
+          </li>
+          <li class="quickstart-step reveal" data-reveal>
+            <span class="step-number">03</span>
+            <div>
+              <strong>Driver-free replay</strong>
+              <p>Re-step the VM without fixtures, a host, or a driver.</p>
+            </div>
+            <pre><code>./target/release/aster replay examples/meeting-scheduler/main.aster \
+  --trace "$ASTER_DEMO_DIR/meeting.trace.jsonl" \
+  --input examples/meeting-scheduler/event.json \
+  --state examples/meeting-scheduler/initial-state.json \
+  --capabilities examples/meeting-scheduler/capabilities.json \
+  --output-state "$ASTER_DEMO_DIR/replay-state.json"
+cmp "$ASTER_DEMO_DIR/record-state.json" \
+  "$ASTER_DEMO_DIR/replay-state.json"</code></pre>
+          </li>
+        </ol>
+        <div class="proof-result reveal" data-reveal>
+          <strong>record and replay states match</strong>
+          <span>34 trace entries</span>
+          <code>driver calls 0 on replay</code>
+        </div>
+      </section>
+
+      <section class="evidence section-dark" id="evidence" aria-labelledby="evidence-title">
+        <div class="section-heading evidence-heading reveal" data-reveal>
+          <p class="section-index">03 / Executable evidence</p>
+          <h2 id="evidence-title">From source to replay,<br>the boundary stays visible.</h2>
+          <p>
+            The bundled meeting-scheduler program records model, read, human
+            approval, write, reconciliation, transactional state, and replay
+            as deterministic evidence.
+          </p>
+        </div>
+
+        <div class="evidence-grid">
+          <div class="source-panel reveal" data-reveal aria-label="ASTER meeting scheduler source">
+            <div class="panel-label">
+              <span>meeting-scheduler/main.aster</span>
+              <span>fixture-backed record</span>
+            </div>
+            <pre><code><span class="code-keyword">let</span> candidate = (<span class="code-effect">infer</span> ParseMeeting(
+  message = msg.value.text,
+) using @planner)?;
+<span class="code-keyword">let</span> request = (<span class="code-effect">validate</span> candidate
+  with MeetingRules)?;
+<span class="code-keyword">let</span> slots = (<span class="code-effect">observe</span> Calendar.free(
+  owner = user,
+  duration_minutes = request.value.duration_minutes,
+))?;
+
+<span class="code-keyword">let</span> purpose = <span class="code-effect">intent</span> ScheduleMeeting {
+  actor = self;
+  beneficiary = user;
+  basis = [provenance(msg), provenance(request),
+           provenance(slots)];
+  expected = EventExpectation {
+    owner = user, slot_id = selected.id,
+  };
+  expires_at = add_seconds(event.time, 120);
+};
+
+<span class="code-keyword">let</span> proposal = <span class="code-effect">propose</span> Calendar.create(
+  owner = user, slot = selected,
+  title = request.value.title,
+  attendees = request.value.attendees,
+  request_id = event.id,
+) <span class="code-keyword">for</span> purpose;
+<span class="code-keyword">let</span> permit = (<span class="code-effect">authorize</span> proposal
+  using CalendarPolicy)?;
+<span class="code-keyword">let</span> receipt = (<span class="code-effect">commit</span> proposal
+  with permit)?;
+<span class="code-keyword">let</span> actual = (<span class="code-effect">observe</span> Calendar.lookup(
+  owner = user, event_id = receipt.value.id,
+))?;
+<span class="code-keyword">let</span> confirmed = (<span class="code-effect">reconcile</span> receipt
+  against actual with EventMatches)?;</code></pre>
+          </div>
+
+          <div class="ledger reveal" data-reveal aria-label="Recorded ASTER trace">
+            <div class="panel-label">
+              <span>record / replay ledger</span>
+              <span>34-entry sha-256 chain</span>
+            </div>
+            <ol>
+              <li>
+                <span>01</span>
+                <div><strong>effect_requested</strong><small>Canonical typed request recorded</small></div>
+                <code>request</code>
+              </li>
+              <li>
+                <span>02</span>
+                <div><strong>budget_reserved</strong><small>Declared maximum reserved before effect</small></div>
+                <code>bounded</code>
+              </li>
+              <li>
+                <span>03</span>
+                <div><strong>policy_decision</strong><small>Pure ordered policy result recorded</small></div>
+                <code>evidence</code>
+              </li>
+              <li>
+                <span>04</span>
+                <div><strong>permit_issued</strong><small>One proposal-bound authority issued</small></div>
+                <code>affine</code>
+              </li>
+              <li>
+                <span>05</span>
+                <div><strong>proposal_committed</strong><small>Matching authority consumed once</small></div>
+                <code>sealed</code>
+              </li>
+              <li>
+                <span>06</span>
+                <div><strong>reconciliation_decision</strong><small>Observed reality matches the receipt</small></div>
+                <code>matched</code>
+              </li>
+              <li>
+                <span>07</span>
+                <div><strong>state_committed</strong><small>Transactional state published</small></div>
+                <code>published</code>
+              </li>
+              <li class="ledger-result">
+                <span>08</span>
+                <div><strong>run_completed</strong><small>Record and replay requests agree</small></div>
+                <code>driver calls 0</code>
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="evidence-rule reveal" data-reveal>
+          <p>Record mode executes five admitted fixture effects.</p>
+          <span aria-hidden="true">≠</span>
+          <p>Replay mode has no fixture or driver input.</p>
+        </div>
+      </section>
+
       <section class="boundary section-dark" id="boundary" aria-labelledby="boundary-title">
         <div class="section-heading reveal" data-reveal>
-          <p class="section-index">01 / The authority boundary</p>
+          <p class="section-index">04 / The authority boundary</p>
           <h2 id="boundary-title">The model is an oracle.<br>Never a principal.</h2>
           <p>
             ASTER keeps inference, intent, authority, execution, and observed
@@ -116,103 +309,42 @@
         </div>
       </section>
 
-      <section class="evidence section-dark" id="evidence" aria-labelledby="evidence-title">
-        <div class="section-heading evidence-heading reveal" data-reveal>
-          <p class="section-index">02 / Executable evidence</p>
-          <h2 id="evidence-title">From source to replay,<br>the boundary stays visible.</h2>
-          <p>
-            The bundled governed-note program crosses the v0.2 host boundary:
-            model, read, human approval, granted write, reconciliation,
-            transactional state, snapshots, and driver-free replay.
-          </p>
+      <section class="protocol section-dark" id="protocol" aria-labelledby="protocol-title">
+        <div class="section-heading reveal" data-reveal>
+          <p class="section-index">05 / External host boundary</p>
+          <h2 id="protocol-title">Durable before granted.</h2>
+          <p>A preview is not authority. ASTER reserves budget and persists the continuation before issuing an execute_grant.</p>
         </div>
-
-        <div class="evidence-grid">
-          <div class="source-panel reveal" data-reveal aria-label="ASTER governed note source">
-            <div class="panel-label">
-              <span>governed-note/main.aster</span>
-              <span>host-governed flow</span>
-            </div>
-            <pre><code><span class="code-dim">// Model output stays opaque until validation.</span>
-<span class="code-keyword">let</span> candidate = (<span class="code-effect">infer</span> DraftNote(
-  request = msg.value.request,
-) using @writer)?;
-
-<span class="code-keyword">let</span> checked = (<span class="code-effect">validate</span> candidate
-  with NoteRules)?;
-<span class="code-keyword">let</span> before = (<span class="code-effect">observe</span>
-  Workspace.fetch(scope = scope))?;
-
-<span class="code-keyword">let</span> purpose = <span class="code-effect">intent</span> SaveNote {
-  basis = [provenance(msg), provenance(checked),
-           provenance(before)];
-  expires_at = add_seconds(event.time, 120);
-};
-
-<span class="code-keyword">let</span> proposal = <span class="code-effect">propose</span> Workspace.store(
-  scope = scope, content = checked.value.content,
-  request_id = event.id,
-) <span class="code-keyword">for</span> purpose;
-<span class="code-keyword">let</span> permit = (<span class="code-effect">authorize</span> proposal
-  using NotePolicy)?;
-<span class="code-keyword">let</span> receipt = (<span class="code-effect">commit</span> proposal
-  with permit)?;
-<span class="code-keyword">let</span> actual = (<span class="code-effect">observe</span>
-  Workspace.lookup(scope = scope))?;
-<span class="code-keyword">let</span> confirmed = (<span class="code-effect">reconcile</span> receipt
-  against actual with NoteMatches)?;</code></pre>
-          </div>
-
-          <div class="ledger reveal" data-reveal aria-label="Recorded ASTER trace">
-            <div class="panel-label">
-              <span>record / replay ledger</span>
-              <span>sha-256 chain</span>
-            </div>
-            <ol>
-              <li>
-                <span>01</span>
-                <div><strong>MODEL_RESULT_RECORDED</strong><small>Candidate sealed with provenance</small></div>
-                <code>7d91…</code>
-              </li>
-              <li>
-                <span>02</span>
-                <div><strong>OBSERVATION_MATCHED</strong><small>Budget reserved before driver</small></div>
-                <code>1 / 8</code>
-              </li>
-              <li>
-                <span>03</span>
-                <div><strong>PROPOSAL_BOUND</strong><small>Action and arguments immutable</small></div>
-                <code>0c2e…</code>
-              </li>
-              <li>
-                <span>04</span>
-                <div><strong>PERMIT_CONSUMED</strong><small>Matching issued identity used once</small></div>
-                <code>affine</code>
-              </li>
-              <li>
-                <span>05</span>
-                <div><strong>RECONCILIATION_OK</strong><small>Transactional state published</small></div>
-                <code>settled</code>
-              </li>
-              <li class="ledger-result">
-                <span>↺</span>
-                <div><strong>REPLAY_COMPLETE</strong><small>Every canonical request matched</small></div>
-                <code>driver calls 0</code>
-              </li>
-            </ol>
-          </div>
-        </div>
-
-        <div class="evidence-rule reveal" data-reveal>
-          <p>Record or host mode executes only admitted effects.</p>
-          <span aria-hidden="true">≠</span>
-          <p>Replay mode has no driver parameter.</p>
-        </div>
+        <ol class="protocol-flow" aria-label="ASTER host protocol sequence">
+          <li class="protocol-step reveal" data-reveal>
+            <span>01</span>
+            <strong>effect_preview</strong>
+            <p>The host may inspect the exact typed request. A preview is not authority.</p>
+          </li>
+          <li class="protocol-step reveal" data-reveal>
+            <span>02</span>
+            <strong>effect_admission</strong>
+            <p>ASTER accepts declared maximum usage, reserves budget, and seals the continuation.</p>
+          </li>
+          <li class="protocol-step reveal" data-reveal>
+            <span>03</span>
+            <strong>execute_grant</strong>
+            <p>Only the matching grant permits execution after snapshot and trace persistence.</p>
+          </li>
+          <li class="protocol-step reveal" data-reveal>
+            <span>04</span>
+            <strong>effect_resolution</strong>
+            <p>ASTER validates the bound typed result, settles usage, and resumes the machine.</p>
+          </li>
+        </ol>
+        <p class="host-warning reveal" data-reveal>
+          The host remains outside ASTER's trust boundary. Process isolation and least privilege remain deployment responsibilities.
+        </p>
       </section>
 
       <section class="download section-light" id="download" aria-labelledby="download-title">
         <div class="download-intro reveal" data-reveal>
-          <p class="section-index">03 / ASTER v0.2.0</p>
+          <p class="section-index">06 / ASTER v0.2.0</p>
           <h2 id="download-title">Run the reference processor.</h2>
           <p>
             Choose a native command-line archive. Every build ships with this
@@ -286,7 +418,7 @@
 
       <section class="scope section-dark" aria-labelledby="scope-title">
         <div class="section-heading reveal" data-reveal>
-          <p class="section-index">04 / Honest scope</p>
+          <p class="section-index">07 / Honest scope</p>
           <h2 id="scope-title">A complete vertical slice.<br>Not a production platform.</h2>
         </div>
         <div class="scope-columns">
@@ -314,21 +446,30 @@
 
       <section class="docs section-dark" id="docs" aria-labelledby="docs-title">
         <div class="docs-heading reveal" data-reveal>
-          <p class="section-index">05 / Inspect the system</p>
+          <p class="section-index">08 / Inspect the system</p>
           <h2 id="docs-title">The documentation<br>is the system of record.</h2>
         </div>
         <div class="docs-links">
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/docs/spec/aster-0.1.md">
+            <span>01</span><strong>Language specification</strong><i aria-hidden="true">↗</i>
+          </a>
           <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/docs/spec/aster-host-protocol-0.2.md">
-            <span>01</span><strong>Host protocol specification</strong><i aria-hidden="true">↗</i>
+            <span>02</span><strong>Host protocol specification</strong><i aria-hidden="true">↗</i>
           </a>
           <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/ARCHITECTURE.md">
-            <span>02</span><strong>Architecture</strong><i aria-hidden="true">↗</i>
+            <span>03</span><strong>Architecture</strong><i aria-hidden="true">↗</i>
           </a>
           <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/docs/design-docs/security-model.md">
-            <span>03</span><strong>Security model</strong><i aria-hidden="true">↗</i>
+            <span>04</span><strong>Security model</strong><i aria-hidden="true">↗</i>
+          </a>
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/examples/meeting-scheduler/main.aster">
+            <span>05</span><strong>Meeting-scheduler example</strong><i aria-hidden="true">↗</i>
+          </a>
+          <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/blob/v0.2.0/examples/governed-note/README.md">
+            <span>06</span><strong>Governed-note example</strong><i aria-hidden="true">↗</i>
           </a>
           <a class="docs-link reveal" data-reveal href="https://github.com/kmizu/aster-lang/releases/tag/v0.2.0">
-            <span>04</span><strong>Release notes</strong><i aria-hidden="true">↗</i>
+            <span>07</span><strong>Release notes</strong><i aria-hidden="true">↗</i>
           </a>
         </div>
       </section>
