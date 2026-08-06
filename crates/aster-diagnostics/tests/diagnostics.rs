@@ -114,3 +114,17 @@ fn diagnostic_code_shape_supports_four_and_five_digit_registered_families() {
     assert!(DiagnosticCode::new("ASTER-TYPE-201").is_err());
     assert!(DiagnosticCode::new("ASTER-BUDGET-110001").is_err());
 }
+
+#[test]
+fn host_codes_are_registered() {
+    for code in [
+        "ASTER-HOST-11001",
+        "ASTER-HOST-11002",
+        "ASTER-HOST-11003",
+        "ASTER-HOST-11004",
+        "ASTER-HOST-11005",
+        "ASTER-HOST-11006",
+    ] {
+        assert_eq!(explain(code).expect("registered").code.as_str(), code);
+    }
+}

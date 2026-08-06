@@ -31,7 +31,7 @@ The step-by-step implementation plan is
 - [x] Define canonical host frames and grant binding.
 - [x] Implement the transport-independent `HostSession` state machine.
 - [x] Add bounded JSONL CLI transport, persistence, and crash resume.
-- [ ] Register stable diagnostics and prove payload redaction.
+- [x] Register stable diagnostics and prove payload redaction.
 - [ ] Add the governed-note self-use example and end-to-end host proof.
 - [ ] Make the protocol and its trust boundary normative in documentation.
 - [ ] Bump v0.2.0 and generalize four-platform release automation and site.
@@ -67,6 +67,10 @@ The step-by-step implementation plan is
   EOF terminal failures, and crash-after-grant resume with identical request,
   maximums, snapshot hash, and grant hash. Unit tests prove exactly 1 MiB is
   accepted and one extra byte is rejected before unbounded allocation.
+- 2026-08-06: Registered `ASTER-HOST-11001` through `11006` with distinct
+  meanings and remediation. Runtime and CLI sentinel tests verify hostile
+  private/secret frame values do not appear in typed errors, failed frames,
+  stderr, traces, snapshots, or output-state artifacts.
 
 ## Surprises & Discoveries
 
@@ -119,6 +123,10 @@ The step-by-step implementation plan is
 - Standard output ownership is enforced structurally: host commands write only
   through `HostTransport`; all `CliError` reporting remains on standard error.
   Each successful write is one JSON object, one newline, and a flush.
+- Host diagnostics intentionally contain only their stable class and fixed
+  redacted summary. Raw serde errors and complete input frames are discarded at
+  the decoding boundary before CLI error construction or trace failure
+  evidence.
 
 ## Outcomes & Retrospective
 

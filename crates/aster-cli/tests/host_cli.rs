@@ -224,3 +224,53 @@ fn malformed_unknown_version_utf8_and_eof_fail_with_protocol_only_stdout() {
         assert_eq!(frames[0]["kind"], "failed", "case {index} terminates");
     }
 }
+
+#[test]
+fn host_redaction_keeps_private_and_secret_values_out_of_all_outputs() {
+    const PRIVATE: &str = "PRIVATE_FRAME_VALUE";
+    const SECRET: &str = "SECRET_FRAME_VALUE";
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let mut child = spawn(&host_args(directory.path()));
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+    let hello = read_frame(&mut stdout);
+    let hostile = format!(
+        "{{\"schema_version\":1,\"session_id\":\"{}\",\"in_reply_to\":0,\"kind\":\"hello_ack\",\"payload\":{{\"protocol\":\"aster-host\",\"protocol_version\":1,\"private\":\"{PRIVATE}\",\"secret\":\"{SECRET}\"}}}}\n",
+        hello["session_id"].as_str().expect("session id")
+    );
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(hostile.as_bytes())
+        .expect("hostile frame writes");
+    drop(child.stdin.take());
+    let mut remaining_stdout = String::new();
+    stdout
+        .read_to_string(&mut remaining_stdout)
+        .expect("terminal frame reads");
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("stderr")
+        .read_to_string(&mut stderr)
+        .expect("stderr reads");
+    let status = child.wait().expect("host exits");
+    assert_eq!(status.code(), Some(2));
+
+    let mut artifacts = remaining_stdout;
+    artifacts.push_str(&stderr);
+    for path in [
+        directory.path().join("run.trace.jsonl"),
+        directory.path().join("snapshots/snapshot-0000.json"),
+        directory.path().join("output.json"),
+    ] {
+        if path.exists() {
+            artifacts.push_str(&String::from_utf8_lossy(
+                &std::fs::read(path).expect("artifact reads"),
+            ));
+        }
+    }
+    assert!(!artifacts.contains(PRIVATE));
+    assert!(!artifacts.contains(SECRET));
+}

@@ -573,3 +573,30 @@ fn host_session_drives_all_effects_then_replays_without_host_interaction() {
     );
     assert_eq!(host.outbound(), terminal);
 }
+
+#[test]
+fn host_redaction_excludes_untrusted_frame_values_from_every_artifact() {
+    const PRIVATE: &str = "PRIVATE_FRAME_VALUE";
+    const SECRET: &str = "SECRET_FRAME_VALUE";
+    let mut host =
+        HostSession::start(meeting_program(), start_request()).expect("host session starts");
+    let hello = host.outbound().expect("hello");
+    let mut hostile = acknowledge(&hello);
+    hostile.session_id = format!("{PRIVATE}-{SECRET}");
+    let error = host.reply(hostile).expect_err("cross-session reply fails");
+    let failed = serde_json::to_string(&host.outbound().expect("failed frame"))
+        .expect("failed frame serializes");
+    let trace = host
+        .trace()
+        .to_json_lines()
+        .expect("failure trace serializes");
+    let snapshots = host
+        .snapshots()
+        .iter()
+        .map(|snapshot| snapshot.to_json().expect("snapshot serializes"))
+        .collect::<String>();
+    for sink in [error.to_string(), failed, trace, snapshots] {
+        assert!(!sink.contains(PRIVATE));
+        assert!(!sink.contains(SECRET));
+    }
+}
