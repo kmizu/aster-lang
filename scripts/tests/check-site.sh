@@ -33,7 +33,11 @@ cat >"$valid_site/index.html" <<'EOF'
       <p>34 trace entries</p>
     </section>
     <section id="evidence">record and replay states match; driver calls 0</section>
-    <section id="boundary">Candidate Proposal Permit Reconciliation</section>
+    <section id="boundary">
+      Candidate Proposal Permit Reconciliation
+      The desired write immutably binds its action, arguments, intent, risk,
+      capability request, and program identity.
+    </section>
     <section id="protocol">
       effect_preview effect_admission execute_grant effect_resolution
       A preview is not authority.
@@ -54,6 +58,7 @@ EOF
 
 cat >"$valid_site/styles.css" <<'EOF'
 :focus-visible { outline: 2px solid #ffc247; }
+.quickstart-step pre { scrollbar-color: #4a4d50 #07080a; scrollbar-width: thin; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none; } }
 EOF
 
@@ -115,4 +120,48 @@ if [[ "$output" != *"$expected"* ]]; then
   exit 1
 fi
 
-echo "site checker accepts the static contract and rejects external dependencies"
+missing_scrollbar_site="$fixture_root/missing-scrollbar"
+mkdir -p "$missing_scrollbar_site"
+cp -R "$valid_site/." "$missing_scrollbar_site/"
+sed -i 's/scrollbar-color/scrollbar-tone/' "$missing_scrollbar_site/styles.css"
+
+set +e
+output=$("$checker" "$missing_scrollbar_site" 2>&1)
+task_status=$?
+set -e
+
+if [[ $task_status -eq 0 ]]; then
+  echo "site checker accepted a page without a themed command scrollbar" >&2
+  exit 1
+fi
+
+expected="missing site contract text in styles.css: scrollbar-color"
+if [[ "$output" != *"$expected"* ]]; then
+  echo "site checker did not identify the missing command scrollbar theme" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+incorrect_proposal_site="$fixture_root/incorrect-proposal"
+mkdir -p "$incorrect_proposal_site"
+cp -R "$valid_site/." "$incorrect_proposal_site/"
+sed -i 's/program identity/policy evidence/' "$incorrect_proposal_site/index.html"
+
+set +e
+output=$("$checker" "$incorrect_proposal_site" 2>&1)
+task_status=$?
+set -e
+
+if [[ $task_status -eq 0 ]]; then
+  echo "site checker accepted incorrect proposal binding copy" >&2
+  exit 1
+fi
+
+expected="missing site contract text in index.html: capability request, and program identity."
+if [[ "$output" != *"$expected"* ]]; then
+  echo "site checker did not identify incorrect proposal binding copy" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
+echo "site checker accepts the static contract and rejects external dependencies, incorrect proposal copy, missing execute_grant, and unthemed command scrollbars"

@@ -56,7 +56,7 @@
 - Consumes: `examples/meeting-scheduler/{main.aster,event.json,initial-state.json,capabilities.json,fixtures.json}`, `target/release/aster`, and the existing v0.2.0 release URLs.
 - Produces: stable README headings `Why ASTER`, `Five-minute deterministic proof`, `What the proof establishes`, `Authority model`, `External host integration`, `Install a release archive`, `Project scope`, and `Documentation map`; exact commands reused conceptually by Task 2.
 
-- [ ] **Step 1: Add a failing README-boundary test**
+- [x] **Step 1: Add a failing README-boundary test**
 
 Extend `scripts/tests/check-docs.sh` immediately after `contract_root` is copied
 and before the existing host-protocol mutation test changes that fixture. Copy
@@ -94,7 +94,7 @@ if [[ "$output" != *"$expected"* ]]; then
 fi
 ```
 
-- [ ] **Step 2: Run the focused test and verify the new case fails for the right reason**
+- [x] **Step 2: Run the focused test and verify the new case fails for the right reason**
 
 Run:
 
@@ -104,7 +104,7 @@ Run:
 
 Expected: non-zero with `documentation checker accepted a README without driver-free replay`, because `scripts/check-docs.sh` does not yet enforce the README onboarding terms.
 
-- [ ] **Step 3: Add the README onboarding contract to the checker**
+- [x] **Step 3: Add the README onboarding contract to the checker**
 
 In the Python block in `scripts/check-docs.sh`, after local README links are checked, require these exact strings:
 
@@ -129,7 +129,7 @@ if readme.is_file():
             errors.append(f"README missing required onboarding term: {term}")
 ```
 
-- [ ] **Step 4: Rewrite the README around the approved six-part narrative**
+- [x] **Step 4: Rewrite the README around the approved six-part narrative**
 
 Keep the title and central boundary quote, then place this reader-facing explanation before status detail:
 
@@ -214,7 +214,7 @@ Follow with:
 
 Remove the old duplicate `Governed external host`, `Meeting scheduler workflow`, prerequisites, release, and warning sections only after their unique content has moved into the new structure.
 
-- [ ] **Step 5: Run the documented proof exactly as written**
+- [x] **Step 5: Run the documented proof exactly as written**
 
 Run the command block from Step 4 in a fresh shell. Expected:
 
@@ -224,7 +224,7 @@ Run the command block from Step 4 in a fresh shell. Expected:
 - final state is byte-for-byte the JSON documented above;
 - `git status --short` shows no generated `.aster` or example changes.
 
-- [ ] **Step 6: Run focused documentation validation**
+- [x] **Step 6: Run focused documentation validation**
 
 Run:
 
@@ -236,7 +236,7 @@ git diff --check
 
 Expected: both documentation checks print their success messages and all commands exit 0.
 
-- [ ] **Step 7: Commit the runnable README**
+- [x] **Step 7: Commit the runnable README**
 
 ```bash
 git add README.md scripts/check-docs.sh scripts/tests/check-docs.sh
@@ -254,7 +254,7 @@ git commit -m "Enrich ASTER README onboarding"
 - Consumes: the exact quickstart command/result contract from Task 1, existing release URLs, and existing `[data-reveal]` behavior from `site/site.js`.
 - Produces: stable section IDs `hero`, `why`, `quickstart`, `evidence`, `boundary`, `protocol`, `download`, and `docs`; CSS class hooks consumed by Task 3.
 
-- [ ] **Step 1: Extend the valid site fixture and add a failing protocol mutation test**
+- [x] **Step 1: Extend the valid site fixture and add a failing protocol mutation test**
 
 Update the valid HTML fixture in `scripts/tests/check-site.sh` to contain every new section and required term:
 
@@ -301,7 +301,7 @@ if [[ "$output" != *"$expected"* ]]; then
 fi
 ```
 
-- [ ] **Step 2: Run the focused site test and verify the new case fails**
+- [x] **Step 2: Run the focused site test and verify the new case fails**
 
 Run:
 
@@ -311,7 +311,7 @@ Run:
 
 Expected: non-zero with `site checker accepted a page without execute_grant`.
 
-- [ ] **Step 3: Strengthen the static-site contract**
+- [x] **Step 3: Strengthen the static-site contract**
 
 In `scripts/check-site.sh`, replace the current section list with:
 
@@ -343,7 +343,7 @@ done
 Keep all existing release-asset, checksum, focus, reduced-motion,
 `IntersectionObserver`, 404, and external-dependency checks.
 
-- [ ] **Step 4: Recompose `site/index.html` without changing the brand core**
+- [x] **Step 4: Recompose `site/index.html` without changing the brand core**
 
 Update the header navigation to `Why`, `Quickstart`, `Protocol`, `Download`,
 and `Docs`. Keep the brand and version marker. Change the primary hero action to:
@@ -488,7 +488,7 @@ links for the language specification, host specification, architecture,
 security model, meeting-scheduler example, governed-note example, and release
 notes. Do not remove any v0.2.0 download URL or limitation.
 
-- [ ] **Step 5: Run semantic and link checks before styling**
+- [x] **Step 5: Run semantic and link checks before styling**
 
 Run:
 
@@ -502,7 +502,7 @@ git diff --check
 Expected: all commands exit 0. The page may look temporarily under-styled, but
 its reading order, anchors, commands, claims, and release links are complete.
 
-- [ ] **Step 6: Commit the semantic Pages journey**
+- [x] **Step 6: Commit the semantic Pages journey**
 
 ```bash
 git add site/index.html scripts/check-site.sh scripts/tests/check-site.sh
@@ -519,7 +519,7 @@ git commit -m "Add guided ASTER Pages journey"
 - Consumes: `.why`, `.why-statement`, `.why-comparison`, `.quickstart`, `.quickstart-steps`, `.quickstart-step`, `.proof-result`, `.protocol`, `.protocol-flow`, `.protocol-step`, and `.host-warning` from Task 2.
 - Produces: desktop, tablet, and mobile layouts that use the existing `--amber`, `--ink`, `--paper`, `--line`, `--display`, and `--mono` tokens and existing `.reveal` motion.
 
-- [ ] **Step 1: Capture the semantic baseline at desktop and mobile widths**
+- [x] **Step 1: Capture the semantic baseline at desktop and mobile widths**
 
 Run:
 
@@ -534,7 +534,7 @@ firefox --headless --screenshot "$ASTER_SHOT_DIR/before-mobile.png" \
 Expected: both screenshots are created. Record visible overflow, unstyled rows,
 and heading collisions to compare after the CSS change.
 
-- [ ] **Step 2: Add the light Why composition**
+- [x] **Step 2: Add the light Why composition**
 
 Add a full-width editorial composition, not cards:
 
@@ -571,7 +571,7 @@ Add a full-width editorial composition, not cards:
 Use amber only for the ASTER path and small labels; keep the section primarily
 paper and black so it resets the eye after the hero.
 
-- [ ] **Step 3: Build the terminal proof as a numbered process band**
+- [x] **Step 3: Build the terminal proof as a numbered process band**
 
 Add:
 
@@ -626,7 +626,7 @@ Add:
 Keep the command text selectable and complete. Do not add fake terminal chrome,
 copy buttons, or decorative traffic-light dots.
 
-- [ ] **Step 4: Add the host protocol authority line**
+- [x] **Step 4: Add the host protocol authority line**
 
 Add:
 
@@ -679,7 +679,7 @@ Add:
 Visually emphasize only `execute_grant`; the other phases remain necessary but
 quiet. Reuse `.reveal`; do not add another animation observer.
 
-- [ ] **Step 5: Add tablet and mobile rules for every new composition**
+- [x] **Step 5: Add tablet and mobile rules for every new composition**
 
 Inside `@media (max-width: 980px)`, add:
 
@@ -736,7 +736,7 @@ flags into unreadable fragments, every touch target remains at least the
 existing button/link height, and the first viewport still contains the ASTER
 brand, complete hero headline, lede, and primary action at 390x844.
 
-- [ ] **Step 6: Render and inspect the final page with and without JavaScript**
+- [x] **Step 6: Render and inspect the final page with and without JavaScript**
 
 Run the two Firefox screenshot commands from Step 1 using `after-desktop.png`
 and `after-mobile.png`. Then temporarily render a copy of `site/index.html`
@@ -762,7 +762,7 @@ Inspect all three images. Expected:
 If inspection finds a defect, add the smallest CSS correction and rerun all
 three renders before continuing.
 
-- [ ] **Step 7: Run focused site checks and commit the visual system**
+- [x] **Step 7: Run focused site checks and commit the visual system**
 
 Run:
 
@@ -789,7 +789,7 @@ git commit -m "Extend Operational Amber onboarding"
 - Consumes: all Task 1-3 artifacts and the approved design specification.
 - Produces: verified branch state ready for review/push; no deployment claim until the public site is byte-compared after merge and Pages publication.
 
-- [ ] **Step 1: Re-run the README quickstart from a clean temporary directory**
+- [x] **Step 1: Re-run the README quickstart from a clean temporary directory**
 
 Execute the exact README commands without substitutions. Capture and compare:
 
@@ -803,7 +803,7 @@ test "$(cat "$ASTER_DEMO_DIR/record-state.json")" = \
 Expected: all exit 0. Confirm `replay` received no `--fixtures`, host transport,
 or driver argument.
 
-- [ ] **Step 2: Audit every public claim against authoritative docs**
+- [x] **Step 2: Audit every public claim against authoritative docs**
 
 Use `rg` to locate all README and Pages claims about candidates, permits,
 reconciliation, replay, host grants, and malicious hosts:
@@ -818,7 +818,7 @@ Compare each result with `docs/spec/aster-0.1.md`,
 and `docs/design-docs/security-model.md`. Fix any wording that grants broader
 guarantees than those documents, then rerun focused docs/site checks.
 
-- [ ] **Step 3: Audit links, release artifacts, and static dependencies**
+- [x] **Step 3: Audit links, release artifacts, and static dependencies**
 
 Run:
 
@@ -833,7 +833,7 @@ Expected: checker commands exit 0. HTTP URLs in `site/index.html` are navigation
 links only; no external `src`, stylesheet, font, media, `@import`, or CSS `url()`
 dependency exists. All four v0.2.0 archives and `SHA256SUMS` remain present.
 
-- [ ] **Step 4: Run the full repository gate after the final edit**
+- [x] **Step 4: Run the full repository gate after the final edit**
 
 Run:
 
@@ -845,7 +845,7 @@ Expected: formatting, Clippy with `-D warnings`, all workspace tests, checker
 self-tests, architecture, production Rust, documentation, static site, and
 release validation all pass.
 
-- [ ] **Step 5: Review the complete branch diff and worktree**
+- [x] **Step 5: Review the complete branch diff and worktree**
 
 Run:
 
@@ -861,7 +861,7 @@ and checker files changed; no screenshots, generated traces, snapshots,
 `.aster`, `.superdesign`, credentials, or temporary files are tracked; worktree
 is clean after recording validation results.
 
-- [ ] **Step 6: Record validation evidence and commit any final corrections**
+- [x] **Step 6: Record validation evidence and commit any final corrections**
 
 Update this plan's checklist, add a short `## Validation Results` section with
 the actual commands, exit status, test count, screenshot widths, trace count,
@@ -891,3 +891,38 @@ Expected: both hashes are identical. Open the public page once at desktop and
 mobile width and confirm Quickstart and Protocol anchors work. Until this step
 passes, report the local/branch work as complete but do not claim the public
 Pages deployment is updated.
+
+## Validation Results
+
+- README proof: the documented command block was executed literally from the
+  repository with a fresh `ASTER_DEMO_DIR`; `check`, fixture-backed `run`,
+  driver-free `replay`, both `cmp` invocations, and the exact-state assertions
+  exited 0. The trace contained 34 entries, and record/replay state was
+  byte-identical at
+  `{"schema_version":1,"state":{"last_event":{"some":{"id":"event-001"}},"profile":{"known_attendees":[]}}}`.
+- Public contract audit: the Candidate, Permit, reconciliation, replay, durable
+  grant, production-scope, and malicious-host wording in `README.md` and
+  `site/index.html` was checked against the two normative specifications and
+  the runtime/replay and security design documents. One evidence-backed Pages
+  correction removed budget and policy evidence from the `Proposal<A>` binding
+  description and named its action, arguments, intent, risk, capability
+  request, and program identity instead. `./scripts/check-docs.sh`,
+  `./scripts/check-site.sh`, and
+  `./scripts/check-release.sh` exited 0. No external site dependency was found;
+  all HTTP(S) occurrences are navigation or download links.
+- Release evidence: GitHub release `v0.2.0` is neither draft nor prerelease and
+  contains the four documented platform archives plus `SHA256SUMS`.
+- Render evidence: fresh Firefox 148 captures were inspected at 1440x1200
+  desktop, 390x844 mobile, 1440x1200 without JavaScript, and 390x844 mobile
+  Quickstart. The first viewport remained intact, no-JavaScript content stayed
+  visible, and the mobile command surface retained horizontal scrolling with a
+  thin graphite scrollbar instead of the bright native scrollbar. All images
+  were temporary files outside the repository.
+- Repository gate: `./scripts/check.sh` exited 0 after the implementation edits
+  with 156 workspace tests passing and 0 failing, followed by successful
+  checker self-tests, architecture, production-Rust, documentation, static-site,
+  and release validation. `git diff --check main...HEAD` and `git diff --check`
+  reported no whitespace errors; the branch contains only the approved design,
+  plan, README, site, and checker paths and no generated or sensitive artifacts.
+- Publication: public Pages byte comparison and anchor inspection remain
+  pending external integration and deployment. No public-site update is claimed.

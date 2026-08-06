@@ -513,6 +513,8 @@ a:focus-visible {
   margin: 0;
   padding: 1.25rem;
   overflow-x: auto;
+  scrollbar-color: var(--line-strong) #07080a;
+  scrollbar-width: thin;
   border-left: 2px solid var(--amber);
   color: #c7c7c2;
   background: #07080a;

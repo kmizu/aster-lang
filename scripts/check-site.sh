@@ -51,6 +51,7 @@ for text in \
   'Driver-free replay' \
   '34 trace entries' \
   'record and replay states match' \
+  'capability request, and program identity.' \
   'effect_preview' \
   'effect_admission' \
   'execute_grant' \
@@ -69,6 +70,8 @@ done
 
 require_text styles.css ':focus-visible'
 require_text styles.css 'prefers-reduced-motion'
+require_text styles.css 'scrollbar-color'
+require_text styles.css 'scrollbar-width'
 require_text site.js 'IntersectionObserver'
 require_text 404.html 'ASTER'
 require_text 404.html '404'
