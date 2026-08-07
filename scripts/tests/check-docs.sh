@@ -36,6 +36,35 @@ cp -R "$repo_root/docs" "$repo_root/examples" "$repo_root/scripts" \
 cp "$repo_root/crates/aster-diagnostics/src/registry.rs" \
   "$contract_root/crates/aster-diagnostics/src/registry.rs"
 
+readme_contract_root="$fixture_root/readme-contract"
+cp -R "$contract_root" "$readme_contract_root"
+
+python3 - "$readme_contract_root/README.md" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+path.write_text(text.replace("Driver-free replay", "Offline replay"), encoding="utf-8")
+PY
+
+set +e
+output=$($readme_contract_root/scripts/check-docs.sh --allow-active-bootstrap "$readme_contract_root" 2>&1)
+task_status=$?
+set -e
+
+if [[ $task_status -eq 0 ]]; then
+  echo "documentation checker accepted a README without driver-free replay" >&2
+  exit 1
+fi
+
+expected="README missing required onboarding term: Driver-free replay"
+if [[ "$output" != *"$expected"* ]]; then
+  echo "documentation checker did not identify the missing README contract" >&2
+  echo "$output" >&2
+  exit 1
+fi
+
 python3 - "$contract_root/docs/spec/aster-host-protocol-0.2.md" <<'PY'
 import pathlib
 import sys
